@@ -1,11 +1,11 @@
 import * as THREE from 'three';
-import { FX_EXTRA, ITEMS, MOVES, MUSIC, SPECIES, SPECIES_BY_ID, STARTERS, TYPE_COLOR, hex, typeMult, type Move } from './data';
+import { type Species, FX_EXTRA, ITEMS, MOVES, MUSIC, SPECIES, SPECIES_BY_ID, STARTERS, STONE_NAME, TYPE_COLOR, hex, typeMult, type Evo, type Move } from './data';
 import { ARENA_R, buildArena } from './models';
 import { Mon, Trainer, weakRingMat, type Unit } from './entities';
 import { Effects } from './fx';
 import { audio } from './audio';
 import { icon, preload, url } from './assets';
-import { UI, type Arrow } from './ui';
+import { UI, type Arrow, type CardSpec } from './ui';
 
 type State = 'loading' | 'starter' | 'playing' | 'paused' | 'reward' | 'swap' | 'gameover';
 
@@ -63,7 +63,8 @@ const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 const distXZ = (a: THREE.Vector3, b: THREE.Vector3) => Math.hypot(a.x - b.x, a.z - b.z);
 const easeOutBack = (x: number) => 1 + 2.7 * Math.pow(x - 1, 3) + 1.7 * Math.pow(x - 1, 2);
 const shuffle = <T>(arr: T[]) => arr.map((v) => [Math.random(), v] as const).sort((a, b) => a[0] - b[0]).map((p) => p[1]);
-const xpNeed = (level: number) => level * level;
+const xpNeed = (level: number) => Math.round(level * level * 0.6);
+const EVOLVE_TIME = 2.6;
 const mid = (u: Unit) => u.pos.clone().setY(u.height * 0.5);
 
 const REWARDS: Reward[] = [
@@ -300,23 +301,72 @@ export class Game {
     this.projectiles = [];
     this.reticle.visible = false;
 
-    const options = shuffle(REWARDS.filter((r) => !r.cond || r.cond(this))).slice(0, 3);
-    this.ui.showModal(
-      `Round ${this.round} cleared!`,
-      '+2 Poké Balls and your team recovered 25% HP. Pick a reward:',
-      options.map((o) => ({
-        title: o.title,
-        icon: icon(url.item(o.item)),
-        body: o.desc,
-        onClick: () => {
-          audio.ui();
-          o.apply(this);
-          this.ui.hideModal();
-          this.state = 'playing';
-          this.startRound(this.round + 1);
-        },
-      })),
-    );
+    const next = () => {
+      audio.ui();
+      this.ui.hideModal();
+      this.state = 'playing';
+      this.startRound(this.round + 1);
+    };
+    const cards: CardSpec[] = shuffle(REWARDS.filter((r) => !r.cond || r.cond(this)))
+      .slice(0, 3)
+      .map((o) => ({ title: o.title, icon: icon(url.item(o.item)), body: o.desc, onClick: () => (o.apply(this), next()) }));
+    // Stones only show up when someone can use one; Alpha rounds always offer one.
+    const offers = this.stoneOffers();
+    const show = () => this.ui.showModal(`Round ${this.round} cleared!`, '+2 Poké Balls and your team recovered 25% HP. Pick a reward:', cards);
+    if (offers.length && (this.round % 5 === 0 || Math.random() < 0.5)) cards[0] = this.stoneCard(pick(offers), next, show);
+    show();
+  }
+
+  private stoneOffers() {
+    return this.party
+      .filter((p) => !p.fainted && !p.evolveTo)
+      .map((mon) => ({ mon, evos: (mon.sp.evos ?? []).filter((e) => e.stone) }))
+      .filter((o) => o.evos.length);
+  }
+
+  private stoneCard({ mon, evos }: { mon: Mon; evos: Evo[] }, next: () => void, back: () => void): CardSpec {
+    const evolveInto = (e: Evo) => () => {
+      next();
+      this.evolve(mon, SPECIES_BY_ID[e.to]);
+    };
+    if (evos.length === 1) {
+      const to = SPECIES_BY_ID[evos[0].to];
+      return {
+        title: STONE_NAME[evos[0].stone!],
+        icon: icon(url.item(evos[0].stone!)),
+        tag: 'Evolution',
+        tagColor: '#9b59ff',
+        body: `Evolve ${mon.sp.name} into ${to.name} now.`,
+        onClick: evolveInto(evos[0]),
+      };
+    }
+    // Branching evolution (Eevee): let the player pick the form.
+    return {
+      title: 'Evolution Stones',
+      icon: icon(url.item(evos[0].stone!)),
+      tag: 'Evolution',
+      tagColor: '#9b59ff',
+      body: `Choose what ${mon.sp.name} evolves into.`,
+      onClick: () =>
+        this.ui.showModal(
+          `Evolve ${mon.sp.name}`,
+          'Pick a stone. This is permanent!',
+          [
+            ...evos.map((e) => {
+              const to = SPECIES_BY_ID[e.to];
+              return {
+                title: to.name,
+                icon: icon(url.front(to.dex)),
+                tag: `${STONE_NAME[e.stone!]} · ${to.type}`,
+                tagColor: hex(TYPE_COLOR[to.type]),
+                body: `${to.move.name}`,
+                onClick: evolveInto(e),
+              };
+            }),
+            { title: 'Back', body: 'See the other rewards', ghost: true, onClick: back },
+          ],
+        ),
+    };
   }
 
   private gameOver(reason: string) {
@@ -389,7 +439,8 @@ export class Game {
     this.updateBalls(dt);
     if (
       this.state === 'playing' && this.toSpawn === 0 && !this.bossPending &&
-      this.wilds.length === 0 && !this.balls.some((b) => b.state === 'wobble')
+      this.wilds.length === 0 && !this.balls.some((b) => b.state === 'wobble') &&
+      !this.party.some((p) => p.evolveTo) // let a last-kill evolution play out before the reward screen
     ) this.endRound();
   }
 
@@ -489,6 +540,7 @@ export class Game {
   private updateParty(m: Mon, dt: number) {
     m.cd -= dt;
     m.moving = false;
+    if (m.evolveTo) return; // mid-evolution: rooted and untargetable
     const tp = this.trainer.pos;
     if (this.hold) m.target = null;
     else {
@@ -740,12 +792,34 @@ export class Game {
   }
 
   private checkEvolution(p: Mon) {
-    const evo = p.sp.evo;
-    if (!evo || p.evolveTo || p.level < evo.level) return;
-    p.evolveTo = SPECIES_BY_ID[evo.to];
-    p.evolving = 1.6;
-    audio.evolve();
+    const evo = p.sp.evos?.find((e) => e.level !== undefined && p.level >= e.level);
+    if (evo) this.evolve(p, SPECIES_BY_ID[evo.to]);
+  }
+
+  evolve(p: Mon, to: Species) {
+    if (p.evolveTo || p.fainted) return;
+    p.evolveTo = to;
+    p.evolving = EVOLVE_TIME;
+    p.evoFlicker = 0;
+    p.target = null;
+    audio.evolve(EVOLVE_TIME);
+    audio.duck((EVOLVE_TIME + 1.5) * 1000);
     this.ui.toast(`What? ${p.sp.name} is evolving!`, 'good');
+  }
+
+  private finishEvolution(m: Mon) {
+    const old = m.sp.name;
+    m.showDex(null);
+    m.setSpecies(m.evolveTo!);
+    m.evolveTo = null;
+    m.flash = 0.25;
+    this.fx.sparkle(mid(m), 12, 0.6);
+    this.fx.spawn('shine', mid(m), { size: m.h * 2, life: 0.5, grow: 0.6 });
+    this.ui.toast(`${old} evolved into ${m.sp.name}!`, 'good');
+    audio.evolved();
+    setTimeout(() => void audio.cry(m.sp.id, 0.7), 400);
+    this.hint('evolved', `Evolved Pokémon are tougher and learn a new move — ${m.sp.name} now uses ${m.sp.move.name}.`);
+    this.checkEvolution(m); // Rare Candy can push past two thresholds
   }
 
   revive(p: Mon, frac: number) {
@@ -753,6 +827,7 @@ export class Game {
     p.hp = Math.round(p.maxHp * frac);
     p.pos.copy(this.trainer.pos).add(new THREE.Vector3(rand(-1.5, 1.5), 0, rand(1, 2)));
     p.grow = 0;
+    this.checkEvolution(p); // may have passed a threshold via Rare Candy while fainted
   }
 
   private addToParty(m: Mon) {
@@ -761,6 +836,8 @@ export class Game {
     m.grow = 0;
     this.fx.sparkle(mid(m), 6);
     void audio.cry(m.sp.id, 0.5);
+    const stones = (m.sp.evos ?? []).filter((e) => e.stone).map((e) => STONE_NAME[e.stone!]);
+    if (stones.length) this.hint('stone', `${m.sp.name} evolves with a ${stones.join(' / ')} — watch for it in round rewards.`);
   }
 
   // ───────────────────────────── catching ─────────────────────────────
@@ -937,16 +1014,16 @@ export class Game {
     const s = Math.max(0.0001, easeOutBack(m.grow) * m.capScale);
 
     if (m.evolveTo) {
+      // Classic sequence: a white silhouette flickers between the old and new form, faster and faster.
       m.evolving -= dt;
-      if (m.evolving <= 0) {
-        const old = m.sp.name;
-        m.setSpecies(m.evolveTo);
-        m.evolveTo = null;
-        this.fx.sparkle(mid(m), 10);
-        this.ui.toast(`${old} evolved into ${m.sp.name}!`, 'good');
-        void audio.cry(m.sp.id, 0.6);
-        this.checkEvolution(m); // Rare Candy can push past two thresholds
+      const p = 1 - m.evolving / EVOLVE_TIME;
+      m.evoFlicker += dt * (1.5 + 20 * p * p);
+      m.showDex(Math.floor(m.evoFlicker) % 2 ? m.evolveTo.dex : m.sp.dex, true);
+      if (Math.random() < dt * (3 + 10 * p)) {
+        const a = Math.random() * Math.PI * 2;
+        this.fx.spawn('shine', mid(m).add(new THREE.Vector3(Math.cos(a) * 0.8, rand(-0.5, 0.8), Math.sin(a) * 0.4)), { size: 0.35, life: 0.5, grow: -0.5, vel: new THREE.Vector3(0, 1.2, 0) });
       }
+      if (m.evolving <= 0) this.finishEvolution(m);
     }
 
     // Hop while walking, breathe while idle, hover if it flies.
@@ -966,9 +1043,8 @@ export class Game {
     m.sprite.visible = s > 0.01;
     m.shadow.visible = s > 0.05;
 
-    // Tint priority: evolving glow > hit flash > red capture beam > normal.
-    if (m.evolveTo) m.mat.color.setScalar(1 + 3 * (0.5 + 0.5 * Math.sin(this.time * 18)));
-    else if (m.flash > 0) m.mat.color.setScalar(5);
+    // Tint priority: hit flash > red capture beam > normal. (Evolving uses a silhouette texture.)
+    if (m.flash > 0) m.mat.color.setScalar(5);
     else if (m.capturing) m.mat.color.setRGB(3, 0.5, 0.5);
     else m.mat.color.setScalar(1);
 
@@ -1094,6 +1170,8 @@ export class Game {
         fainted: p.fainted,
         hurt: p.hurtT > 0,
         evolving: p.evolveTo !== null,
+        evoLevel: p.sp.evos?.find((e) => e.level)?.level,
+        evoStones: (p.sp.evos ?? []).filter((e) => e.stone).map((e) => icon(url.item(e.stone!))),
       })),
     );
   }

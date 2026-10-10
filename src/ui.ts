@@ -30,6 +30,8 @@ export interface PartyEntry {
   fainted: boolean;
   hurt: boolean;
   evolving: boolean;
+  evoLevel?: number;
+  evoStones: string[];
 }
 
 export interface Arrow {
@@ -94,7 +96,11 @@ export class UI {
       const cls = [p.fainted && 'fainted', p.hurt && 'hurt', p.evolving && 'evolving'].filter(Boolean).join(' ');
       html += `
         <div class="mon-card ${cls}">
-          <img class="mon-icon" src="${p.icon}" alt="" />
+          <div class="mon-icon-wrap">
+            <img class="mon-icon" src="${p.icon}" alt="" />
+            ${p.evoLevel ? `<span class="evo-lv" title="Evolves at Lv${p.evoLevel}">${p.evoLevel}</span>` : ''}
+            ${p.evoStones.length ? `<span class="evo-stones" title="Evolves with a stone">${p.evoStones.map((s) => `<img src="${s}" alt="" />`).join('')}</span>` : ''}
+          </div>
           <div class="mon-info">
             <div class="mon-head"><b>${p.name}</b><span class="lv">Lv${p.level}</span></div>
             <div class="bar"><div style="width:${pct}%;background:${col}"></div></div>

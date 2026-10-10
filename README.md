@@ -34,7 +34,11 @@ doesn't redistribute them — fine for a personal prototype, not for a public re
 
 - Your party auto-battles nearby wild Pokémon with each species' signature move. Type matchups apply.
 - Wild Pokémon under 35% HP get a pulsing yellow ring. Catch chance rises as HP drops.
-- Pokémon evolve at their usual levels (Charmander → Charmeleon at 16, …).
+- Pokémon evolve with the classic white-silhouette sequence (they're invulnerable while it plays):
+  - by level — Charmander → Charmeleon at 16, … (trade evolutions like Kadabra → Alakazam are level-based here)
+  - by stone — Pikachu, Vulpix, Gloom and Eevee. Stones show up as round rewards only when someone can use one,
+    and Alpha rounds always offer one. Eevee lets you choose Vaporeon, Jolteon or Flareon.
+  - party cards show a purple level badge or stone icon for how each Pokémon evolves next
 - Clearing a round gives +2 Poké Balls, a 25% heal, and 1 of 3 item rewards.
 - Every 5th round an Alpha shows up (big, tough, hard to catch, its own music).
 - The run ends if the trainer's HP hits 0 or your whole party faints.

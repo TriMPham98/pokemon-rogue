@@ -18,6 +18,8 @@ export interface SpriteTex {
   w: number;
   h: number;
   icon: string; // cropped image as a data URL, for DOM cards
+  canvas: HTMLCanvasElement;
+  white?: THREE.Texture;
 }
 
 const cache = new Map<string, SpriteTex>();
@@ -37,7 +39,7 @@ function placeholder(): SpriteTex {
   ctx.font = 'bold 20px sans-serif';
   ctx.textAlign = 'center';
   ctx.fillText('?', 16, 23);
-  return (fallback = { tex: new THREE.CanvasTexture(c), w: 32, h: 32, icon: c.toDataURL() });
+  return (fallback = { tex: new THREE.CanvasTexture(c), w: 32, h: 32, icon: c.toDataURL(), canvas: c });
 }
 
 function trim(img: HTMLImageElement, pixelArt: boolean): SpriteTex {
@@ -69,7 +71,7 @@ function trim(img: HTMLImageElement, pixelArt: boolean): SpriteTex {
   tex.generateMipmaps = false;
   tex.minFilter = THREE.LinearFilter;
   tex.magFilter = pixelArt ? THREE.NearestFilter : THREE.LinearFilter;
-  return { tex, w, h, icon: out.toDataURL() };
+  return { tex, w, h, icon: out.toDataURL(), canvas: out };
 }
 
 async function load(src: string) {
@@ -94,6 +96,26 @@ export async function preload(srcs: string[], onProgress: (done: number, total: 
 /** Synchronous lookup; everything is preloaded before the game starts. */
 export function getTex(src: string): SpriteTex {
   return cache.get(src) ?? placeholder();
+}
+
+/** Solid white silhouette of a sprite, for the evolution sequence. Built on first use. */
+export function silhouette(src: string): THREE.Texture {
+  const st = getTex(src);
+  if (st.white) return st.white;
+  const c = document.createElement('canvas');
+  c.width = st.w;
+  c.height = st.h;
+  const ctx = c.getContext('2d')!;
+  ctx.drawImage(st.canvas, 0, 0);
+  ctx.globalCompositeOperation = 'source-in';
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, c.width, c.height);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = st.tex.magFilter;
+  return (st.white = tex);
 }
 
 /** Cropped sprite for <img> tags, so small Pokémon don't drown in padding. */

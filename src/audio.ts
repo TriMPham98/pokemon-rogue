@@ -201,8 +201,17 @@ class AudioEngine {
   levelUp() {
     [523, 659, 784, 1047].forEach((f, i) => this.tone(f, f, 0.1, 'square', 0.05, i * 0.07));
   }
-  evolve() {
-    for (let i = 0; i < 10; i++) this.tone(400 + i * 80, 400 + i * 80, 0.1, 'triangle', 0.05, i * 0.11);
+  /** Rising, accelerating shimmer under the evolution sequence (`dur` seconds). */
+  evolve(dur: number) {
+    let t = 0;
+    for (let i = 0; t < dur - 0.1; i++) {
+      const f = 330 * Math.pow(2, (i % 12) / 12) * (i >= 12 ? 2 : 1);
+      this.tone(f, f, 0.12, 'triangle', 0.045, t);
+      t += Math.max(0.06, 0.2 - i * 0.008);
+    }
+  }
+  evolved() {
+    [523, 659, 784, 659, 784, 1047].forEach((f, i) => this.tone(f, f, i === 5 ? 0.5 : 0.13, 'square', 0.06, i * 0.13));
   }
   faint() {
     this.tone(600, 80, 0.6, 'square', 0.05);

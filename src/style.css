@@ -35,6 +35,13 @@ body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; color: #ff
 .mon-card.hurt { border-color: #ff5a5a; background: rgba(90, 20, 30, 0.85); }
 .mon-card.evolving { border-color: #fff; animation: evo 0.25s infinite alternate; }
 @keyframes evo { to { background: rgba(255,255,255,0.35); } }
+.mon-icon-wrap { position: relative; flex-shrink: 0; }
+.evo-lv {
+  position: absolute; right: -4px; bottom: -3px; font-size: 9px; font-weight: 800; line-height: 1;
+  background: #9b59ff; color: #fff; padding: 2px 3px; border-radius: 4px;
+}
+.evo-stones { position: absolute; right: -5px; bottom: -4px; display: flex; }
+.evo-stones img { width: 13px; height: 13px; image-rendering: pixelated; object-fit: contain; margin-left: -4px; }
 .mon-icon { width: 40px; height: 40px; image-rendering: pixelated; object-fit: contain; flex-shrink: 0; }
 .mon-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .mon-head { display: flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; }

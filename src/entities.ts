@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Species } from './data';
-import { getTex, url } from './assets';
+import { getTex, silhouette, url } from './assets';
 import { buildTrainer, shared } from './models';
 
 /** World units per sprite pixel. */
@@ -61,7 +61,10 @@ export class Mon {
   anim = Math.random() * 10;
   target: Unit | null = null;
   evolveTo: Species | null = null;
-  evolving = 0;
+  evolving = 0; // seconds left in the evolution sequence
+  evoFlicker = 0; // drives the old/new silhouette swap
+  private viewDex: number | null = null;
+  private white = false;
 
   /** Sprite view: back sprite when heading away from the camera, mirrored to face left/right. */
   back = false;
@@ -110,7 +113,7 @@ export class Mon {
   }
   /** Can act and be targeted. */
   get alive() {
-    return !this.fainted && this.dying < 0 && !this.capturing;
+    return !this.fainted && this.dying < 0 && !this.capturing && !this.evolveTo;
   }
 
   setSpecies(sp: Species) {
@@ -142,10 +145,21 @@ export class Mon {
     this.applyView();
   }
 
+  /** Temporarily show another species' sprite, optionally as a white silhouette (evolution flicker). */
+  showDex(dex: number | null, white = false) {
+    if (dex === this.viewDex && white === this.white) return;
+    this.viewDex = dex;
+    this.white = white;
+    this.applyView();
+  }
+
   private applyView() {
-    const st = getTex(this.back ? url.back(this.sp.dex) : url.front(this.sp.dex));
-    if (this.mat.map !== st.tex) {
-      this.mat.map = st.tex;
+    const dex = this.viewDex ?? this.sp.dex;
+    const src = this.back ? url.back(dex) : url.front(dex);
+    const st = getTex(src);
+    const tex = this.white ? silhouette(src) : st.tex;
+    if (this.mat.map !== tex) {
+      this.mat.map = tex;
       this.mat.needsUpdate = true;
     }
     const k = PX * (this.boss ? 1.6 : 1);
