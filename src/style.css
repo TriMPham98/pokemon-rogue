@@ -37,10 +37,6 @@ body {
 .progress { height: 5px; background: rgba(255, 255, 255, 0.1); border-radius: 3px; overflow: hidden; }
 .progress > div { height: 100%; background: linear-gradient(90deg, var(--accent), #8be3ff); transition: width 0.3s; }
 .status-sub { font-size: 12px; color: var(--muted); font-weight: 600; }
-.trainer-hp { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; margin-top: 2px; }
-.trainer-hp .label { color: var(--muted); }
-.trainer-hp .bar { flex: 1; height: 9px; }
-.trainer-hp .num { min-width: 52px; text-align: right; }
 
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
@@ -50,10 +46,13 @@ body {
 .chip img { width: 20px; height: 20px; image-rendering: pixelated; object-fit: contain; margin: -3px -2px; }
 .chip #hud-ball-name { color: var(--muted); font-weight: 600; }
 .chip.empty { border-color: rgba(255, 59, 48, 0.7); }
+/* Both labels share one grid cell, so the chip is always as wide as the longer one and never resizes on toggle. */
+.chip.mode { display: grid; justify-items: center; }
+.chip.mode > span { grid-area: 1 / 1; }
+.chip.attack .on-hold, .chip.hold .on-attack { visibility: hidden; }
 .chip.attack { background: rgba(176, 44, 38, 0.88); }
 .chip.hold { background: rgba(52, 102, 196, 0.9); }
 .chip.focus { background: rgba(200, 40, 40, 0.9); display: none; }
-.chip.slowed { background: rgba(160, 180, 60, 0.9); display: none; }
 .chip.dash .bar { width: 46px; height: 6px; }
 
 .bar { height: 8px; background: rgba(0, 0, 0, 0.5); border-radius: 4px; overflow: hidden; }
@@ -186,10 +185,6 @@ body {
 .banner.show { animation: banner 2.4s forwards; }
 @keyframes banner { 0% { opacity: 0; transform: scale(1.4); } 12%, 75% { opacity: 1; transform: none; } 100% { opacity: 0; } }
 
-.hurt { position: absolute; inset: 0; box-shadow: inset 0 0 120px rgba(255, 0, 0, 0.6); opacity: 0; }
-.hurt.show { animation: hurt 0.4s; }
-@keyframes hurt { from { opacity: 1; } to { opacity: 0; } }
-
 /* ───────── modals ───────── */
 .modal {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -227,6 +222,60 @@ body {
 .stat b { text-align: right; }
 .sbar { height: 5px; background: rgba(255, 255, 255, 0.1); border-radius: 3px; overflow: hidden; }
 .sbar > div { height: 100%; border-radius: 3px; }
+
+/* ───────── title screen ───────── */
+#ui.on-title > :not(.hero) { visibility: hidden; }
+.hero {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: auto;
+  overflow-y: auto; padding: 24px 16px;
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 52%, rgba(10, 20, 40, 0.2), rgba(6, 10, 22, 0.82)),
+    linear-gradient(180deg, rgba(6, 10, 22, 0.55), rgba(6, 10, 22, 0) 30%, rgba(6, 10, 22, 0) 70%, rgba(6, 10, 22, 0.7));
+}
+.hero.hidden { display: none; }
+.hero-inner { display: flex; flex-direction: column; align-items: center; text-align: center; max-width: 720px; animation: hero-in 0.6s ease-out; }
+@keyframes hero-in { from { opacity: 0; transform: translateY(12px); } }
+.hero-kicker { font-size: 13px; font-weight: 800; letter-spacing: 3px; text-transform: uppercase; color: var(--accent); text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6); }
+.hero-logo {
+  margin: 2px 0 0; font-size: clamp(48px, 11vw, 104px); font-weight: 900; line-height: 0.95; letter-spacing: 1px;
+  color: #ffcb05; -webkit-text-stroke: 3px #2a5bb0; paint-order: stroke fill;
+  text-shadow: 0 6px 0 #1b3a6b, 0 12px 28px rgba(0, 0, 0, 0.5);
+}
+.hero-logo span { display: block; font-size: 0.62em; color: #fff; letter-spacing: 10px; margin-top: 4px; -webkit-text-stroke-color: #1b3a6b; }
+.hero-stage { display: flex; align-items: flex-end; justify-content: center; gap: 4px; margin: 22px 0 14px; min-height: 150px; }
+.hero-mon, .hero-trainer { filter: drop-shadow(0 10px 6px rgba(0, 0, 0, 0.35)); animation: hero-bob 2.4s ease-in-out infinite; }
+.hero-mon { height: 120px; image-rendering: pixelated; object-fit: contain; animation-delay: calc(var(--i) * -0.6s); }
+.hero-trainer {
+  width: 64px; height: 128px; margin: 0 14px; image-rendering: pixelated; background-position: 0 0; background-repeat: no-repeat;
+  animation-delay: -0.3s;
+}
+@keyframes hero-bob { 50% { transform: translateY(-5px); } }
+.hero-tag { margin: 0 0 22px; font-size: 17px; font-weight: 600; max-width: 460px; line-height: 1.45; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.7); }
+.hero-start {
+  font: inherit; font-size: 22px; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; cursor: pointer;
+  color: #1b2a44; background: linear-gradient(180deg, #ffe066, var(--gold)); border: 0; border-radius: 999px;
+  padding: 14px 54px; box-shadow: 0 5px 0 #b8860b, 0 10px 26px rgba(0, 0, 0, 0.45); transition: transform 0.1s, box-shadow 0.1s;
+}
+.hero-start:hover { transform: translateY(-2px); box-shadow: 0 7px 0 #b8860b, 0 14px 30px rgba(0, 0, 0, 0.5); }
+.hero-start:active { transform: translateY(3px); box-shadow: 0 2px 0 #b8860b, 0 6px 16px rgba(0, 0, 0, 0.45); }
+.hero-press { margin-top: 12px; font-size: 13px; font-weight: 600; color: var(--muted); animation: blink 1.6s ease-in-out infinite; }
+.hero-press kbd {
+  font: inherit; font-weight: 800; font-size: 11px; padding: 1px 6px; border-radius: 4px;
+  background: rgba(255, 255, 255, 0.16); border: 1px solid rgba(255, 255, 255, 0.25); color: var(--text);
+}
+@keyframes blink { 50% { opacity: 0.4; } }
+.hero-stats { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 26px; }
+.hero-stats > div {
+  display: flex; flex-direction: column; align-items: center; min-width: 96px; padding: 8px 14px; border-radius: var(--radius);
+  background: var(--glass); border: 1px solid var(--line);
+}
+.hero-stats b { font-size: 20px; font-weight: 900; color: var(--gold); }
+.hero-stats span { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
+@media (max-width: 640px) {
+  .hero-mon { height: 72px; }
+  .hero-trainer { width: 40px; height: 80px; margin: 0 6px; }
+  .hero-stage { min-height: 90px; }
+}
 
 /* pause-screen team sheet */
 .sheet { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 330px)); justify-content: center; gap: 10px; margin: 0 auto 20px; max-width: 960px; text-align: left; }

@@ -4,7 +4,7 @@
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FX_ALL, ITEMS, MUSIC, SPECIES, TRAINER_SHEET } from '../src/data.ts';
+import { FX_ALL, ITEMS, MUSIC, SE, SPECIES, TRAINER_SHEET } from '../src/data.ts';
 import { ENV, type TileArt } from '../src/env.ts';
 import { addTrunk, encodePng, makeTileset, renderCutout, renderGrid, spriteFrame } from './gba-tiles.ts';
 
@@ -57,7 +57,7 @@ async function run([url, rel]: [string, string]) {
 // Each song is the game's MIDI plus a JSON of the instruments its voicegroup uses (squares, wave channel, noise and
 // sampled instruments), so src/music.ts can play it close to how the GBA's m4a engine does.
 
-const SONGS = [...new Set(Object.values(MUSIC).flat())];
+const SONGS = [...new Set([...Object.values(MUSIC).flat(), ...Object.values(SE)])];
 const SRC_FILES = ['sound/voice_groups.inc', 'sound/keysplit_tables.inc', 'sound/direct_sound_data.inc', 'sound/programmable_wave_data.inc', 'sound/songs/midi/midi.cfg'];
 
 /** Downloads the music sources, writes music/<song>.json, and returns the sample downloads still needed. */

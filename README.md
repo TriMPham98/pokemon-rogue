@@ -35,7 +35,7 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
 | 1-6 / click a party card | Switch which Pokémon is out |
 | Right-click / F | Toggle between attacking and holding fire (to set up catches) |
 | E | Focus your Pokémon on the wild Pokémon under the cursor (again to clear) |
-| Shift | Dash (brief invulnerability, 1.4s cooldown) |
+| Shift | Dash (1.4s cooldown) |
 | Esc / P | Pause |
 | M | Mute |
 
@@ -47,7 +47,7 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
     (higher for Slash, Karate Chop, Razor Leaf, Crabhammer…), and dual types
   - move effects: poison, burn (halves physical damage) and paralysis (slower, sometimes can't move) with type
     immunities; Fire Spin / Clamp bind, drain moves heal, Take Down / Submission recoil, Dragon Rage and Night Shade
-    do fixed damage, String Shot slows (even the trainer)
+    do fixed damage, String Shot slows
   - Gen 5 scaled experience shared like an Exp. All, real capture rates and the Gen 3/4 capture formula
     (lower HP, status, Great/Ultra Balls all help)
   - each Pokémon is sized by its Pokédex height (square-root compressed so Diglett and Onix are both playable)
@@ -57,7 +57,7 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
 - One Pokémon is out at a time and auto-battles with its species' signature move; switch with 1-6 to play type
   matchups. When it faints the next one comes out. The one battling gets full experience, the rest half (Exp. Share).
 - Wild Pokémon appear in the tall grass (or cave hollows) and loiter there until you or your Pokémon come close —
-  then a "!" pops up and they (and their neighbours) attack. Your Pokémon only goes after ones that are fighting
+  then a "!" pops up and they (and their neighbours) go after your Pokémon. Your Pokémon only goes after ones that are fighting
   you, so you can walk up to a quiet one and throw a ball.
 - Each move has its own wind-up
   animation (lunges, leaps and ground-pounds, charging glows, psychic levitation) before the effect lands.
@@ -72,7 +72,7 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
 - Clearing a round plays the victory theme and gives +2 Poké Balls, a 35% heal, status cured, and 1 of 3 item
   rewards (Great/Ultra Ball upgrades, Full Heal, Rare Candy, …).
 - After an area's last round you stop at a Pokémon Center: the healing jingle plays, the whole party (fainted ones
-  too) and the trainer are fully restored, and you pick who leads into the next area.
+  too) are fully restored, and you pick who leads into the next area.
 - An area's 5th round ends with a strong wild Pokémon (★, orange arrow, the FRLG wild-battle theme): an evolved form
   of one of the area's basic Pokémon a few levels up — Pidgeotto on Route 1, Butterfree in Viridian Forest.
 - Every 5 rounds you move to the next area of Kanto, in story order: Route 1 → Viridian Forest → Mt. Moon →
@@ -84,7 +84,10 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
 - 1 in 64 wild Pokémon are shiny (sparkles, chime, blue off-screen arrow). Shininess survives catching and evolving.
 - Progress persists between runs in localStorage: best round, Pokédex, shinies. Catching Pikachu or Eevee,
   or reaching round 15, unlocks extra starters.
-- The run ends if the trainer's HP hits 0 or your whole party faints.
+- Only Pokémon battle: wild ones go after the Pokémon you've sent out, never the trainer. The run ends when your
+  whole party faints.
+- The game opens on a title screen (FireRed's title theme, the area slowly circling behind it) with your best round,
+  Pokédex, shinies and run count from earlier runs.
 
 ## Code map
 

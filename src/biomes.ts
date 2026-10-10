@@ -397,12 +397,20 @@ function blob(cx: number, cz: number, r: number): [number, number][] {
   return cells;
 }
 
-/** Ground a prop blocks, as an axis-aligned rectangle (z0 is the far edge). */
+/** Ground a prop blocks: a circle around what touches the ground (a tree's trunk, a sign's post, a rock's base). */
 export interface Solid {
-  x0: number;
-  x1: number;
-  z0: number;
-  z1: number;
+  x: number;
+  z: number;
+  r: number;
+}
+
+/** Half the width of a billboard's bottom row of opaque pixels, in world units at scale 1. */
+function footprint(name: EnvName) {
+  const c = envTex(name).canvas;
+  const row = c.getContext('2d')!.getImageData(0, c.height - 1, c.width, 1).data;
+  let x0 = c.width, x1 = -1;
+  for (let x = 0; x < c.width; x++) if (row[x * 4 + 3] > 10) (x0 = Math.min(x0, x)), (x1 = x);
+  return x1 < 0 ? c.width * UNIT * 0.25 : ((x1 - x0 + 1) * UNIT) / 2;
 }
 
 /** A place wild Pokémon spawn and loiter (a tall-grass patch, or a hollow in a cave). */
@@ -468,17 +476,14 @@ export function buildArena(b: Biome) {
 
   // Standing art: props inside the arena, and a dense ring walling it in.
   const tint = art.tint ?? 0xffffff;
-  // Props inside the arena are solid, like map tiles in the games: a tree blocks the whole patch of ground its
-  // picture covers on screen (its width, and back as far as it's tall), so nobody ends up standing inside it.
+  // Props inside the arena are solid where they meet the ground: only a tree's trunk blocks, so units walk
+  // around it and behind its canopy (which hides them, as the billboards share the camera's tilt).
   const solids: Solid[] = [];
   for (const [name, n, scale = 1] of art.props ?? []) {
     const spots = spotsIn(n, 4, ARENA_R - 2, 1.4 + 0.6 * scale, busy, scale);
     g.add(billboards(name, spots, tint));
-    const st = envTex(name);
-    for (const { x, z, s } of spots) {
-      const hw = Math.max(0.3, st.w * UNIT * s * 0.5), depth = st.h * UNIT * s * 1.25;
-      solids.push({ x0: x - hw, x1: x + hw, z0: z - depth, z1: z + 0.2 });
-    }
+    const foot = footprint(name);
+    for (const { x, z, s } of spots) solids.push({ x, z, r: Math.max(0.15, foot * s) });
   }
   g.userData.solids = solids;
   const ring: { x: number; z: number; s: number }[] = [];

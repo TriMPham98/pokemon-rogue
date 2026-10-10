@@ -86,7 +86,7 @@ export class Mon {
   capturing = false;
   moving = false;
   anim = Math.random() * 10;
-  target: Unit | null = null;
+  target: Mon | null = null;
   evolveTo: Species | null = null;
   evolving = 0; // seconds left in the evolution sequence
   evoFlicker = 0; // drives the old/new silhouette swap
@@ -233,21 +233,17 @@ export class Mon {
   }
 }
 
-const TRAINER_FRAMES = 9; // pokefirered overworld sheet: down, up, left, then two walking frames for each
+export const TRAINER_FRAMES = 9; // pokefirered overworld sheet: down, up, left, then two walking frames for each
 const STAND = { down: 0, up: 1, left: 2, right: 2 };
 const STEPS = { down: [3, 4], up: [5, 6], left: [7, 8], right: [7, 8] };
 type Facing = keyof typeof STAND;
 
 /** The player: Red's overworld sprite, billboarded like the Pokémon. */
 export class Trainer {
-  hp = 100;
-  maxHp = 100;
-  inv = 0;
   walk = 0; // walk-cycle phase
   moving = false;
   throwT = 0;
   facing: Facing = 'down';
-  slowT = 0; // >0 while slowed by String Shot
   readonly radius = 0.45;
   readonly height = 1.9;
   readonly obj = new THREE.Group();
@@ -296,5 +292,3 @@ export class Trainer {
     this.sprite.position.y = walkRate > 0 ? Math.abs(Math.sin(this.walk * Math.PI)) * 0.05 : 0;
   }
 }
-
-export type Unit = Mon | Trainer;

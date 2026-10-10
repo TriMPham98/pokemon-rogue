@@ -4,19 +4,19 @@ import { LEADER_LEVELS, BALLS, calcStats, SLOW_TIME, STATUS_DOT, TRAP_TIME, catc
 import { ARENA_R } from './models';
 import { BIOMES, ROUNDS_PER_AREA, areaRound, biomeFor, buildArena, disposeArena, sunFor, type Biome, type Solid, type Zone } from './biomes';
 import { UNLOCKS, finishRun, register, save } from './progress';
-import { ACT_FOLLOW, Mon, Trainer, weakRingMat, type Unit } from './entities';
+import { ACT_FOLLOW, Mon, TRAINER_FRAMES, Trainer, weakRingMat } from './entities';
 import { Effects } from './fx';
 import { audio } from './audio';
 import { icon, preload, url } from './assets';
 import { ENV } from './env';
 import { UI, statRow, type Arrow, type CardSpec, type TypeChip } from './ui';
 
-type State = 'loading' | 'starter' | 'playing' | 'paused' | 'reward' | 'swap' | 'center' | 'gameover';
+type State = 'loading' | 'title' | 'starter' | 'playing' | 'paused' | 'reward' | 'swap' | 'center' | 'gameover';
 
 interface Projectile {
   sprite: THREE.Sprite;
   start: THREE.Vector3;
-  target: Unit;
+  target: Mon;
   t: number;
   dur: number;
   arc: number;
@@ -61,6 +61,10 @@ const TRAINER_SPEED = 7;
 const CAM_OFFSET = new THREE.Vector3(0, 12, 12);
 // Look a bit south of the trainer so the party panel doesn't hide what's coming from below.
 const CAM_LEAD = new THREE.Vector3(0, 0.5, 1.5);
+const UP = new THREE.Vector3(0, 1, 0);
+// Units only collide with solids at this fraction of their radius: feet, not the whole sprite, meet a trunk.
+const SOLID_GIVE = 0.6;
+const STEER_LOOK = 1.2; // how far ahead walkers start curving around a solid
 const SUN_OFFSET = new THREE.Vector3(12, 22, 8);
 const FLOATER_LIFE = 0.8;
 const WEAK = 0.35;
@@ -75,7 +79,7 @@ const distXZ = (a: THREE.Vector3, b: THREE.Vector3) => Math.hypot(a.x - b.x, a.z
 const easeOutBack = (x: number) => 1 + 2.7 * Math.pow(x - 1, 3) + 1.7 * Math.pow(x - 1, 2);
 const shuffle = <T>(arr: T[]) => arr.map((v) => [Math.random(), v] as const).sort((a, b) => a[0] - b[0]).map((p) => p[1]);
 const EVOLVE_TIME = 2.6;
-const mid = (u: Unit) => u.pos.clone().setY(u.height * 0.5);
+const mid = (u: Mon) => u.pos.clone().setY(u.height * 0.5);
 /** Wind-up before each kind of move lands, long enough to read the attacker's animation. */
 /** Status condition labels and tints. */
 const STATUS_INFO: Record<Status, { label: string; verb: string; color: number; css: string }> = {
@@ -97,10 +101,9 @@ function weightedPick<T>(items: T[], weight: (t: T) => number) {
 
 const REWARDS: Reward[] = [
   {
-    title: 'Hyper Potion', item: 'hyper-potion', desc: 'Fully heal every conscious Pokémon and the trainer.',
+    title: 'Hyper Potion', item: 'hyper-potion', desc: 'Fully heal every conscious Pokémon.',
     apply: (g) => {
       for (const p of g.party) if (!p.fainted) p.hp = p.maxHp;
-      g.trainer.hp = g.trainer.maxHp;
     },
   },
   {
@@ -121,13 +124,6 @@ const REWARDS: Reward[] = [
   {
     title: 'X Attack', item: 'x-attack', desc: 'Your party deals +15% damage for the rest of the run.',
     apply: (g) => (g.partyAtkMul += 0.15),
-  },
-  {
-    title: 'Focus Band', item: 'focus-band', desc: '+30 max trainer HP and fully heal the trainer.',
-    apply: (g) => {
-      g.trainer.maxHp += 30;
-      g.trainer.hp = g.trainer.maxHp;
-    },
   },
   {
     title: 'Great Balls', item: 'great-ball', desc: 'Upgrade every ball you throw to a Great Ball (1.5× catch rate).',
@@ -202,7 +198,6 @@ export class Game {
   private dashT = 0;
   private dashCd = 0;
   private dashDir = new THREE.Vector2();
-  private dodge = 0;
   private shake = 0;
   private hitStop = 0;
   private hitStopCd = 0;
@@ -273,11 +268,11 @@ export class Game {
       const p = document.querySelector('#modal p');
       if (p) p.textContent = `${done} / ${total} sprites`;
     }); // counts every failed load so far, the arena art included
-    if (!missing) return this.showStarter();
+    if (!missing) return this.showHero();
     this.ui.showModal(
       'Some assets are missing',
       `${missing} sprites failed to load. Run <code>npm run assets</code> and reload. You can still play with placeholders.`,
-      [{ title: 'Continue anyway', onClick: () => this.showStarter() }],
+      [{ title: 'Continue anyway', onClick: () => this.showHero() }],
     );
   }
 
@@ -289,6 +284,7 @@ export class Game {
       audio.unlock();
       if (k === ' ') e.preventDefault();
       if (e.repeat) return;
+      if (this.state === 'title' && (k === 'enter' || k === ' ')) return this.leaveHero();
       if (k === ' ') this.throwBall();
       if (k === 'f') this.toggleHold();
       if (k >= '1' && k <= '6') this.switchTo(Number(k) - 1);
@@ -328,6 +324,38 @@ export class Game {
   }
 
   // ───────────────────────────── flow ─────────────────────────────
+
+  /** Title screen over the slowly orbiting first area; the title theme starts on the first click or key. */
+  private showHero() {
+    this.ui.hideModal();
+    this.state = 'title';
+    audio.playMusic(MUSIC.title);
+    const stats = save.runs
+      ? [
+          { label: 'Best round', value: String(save.best) },
+          { label: 'Pokédex', value: `${save.caught.length}/${SPECIES.length}` },
+          { label: 'Shiny', value: `✦ ${save.shinies.length}` },
+          { label: 'Runs', value: String(save.runs) },
+        ]
+      : [];
+    this.ui.showHero(
+      {
+        trainer: url.trainer(TRAINER_SHEET),
+        frames: TRAINER_FRAMES,
+        lineup: ['bulbasaur', 'charmander', 'squirtle', 'pikachu'].map((id) => url.anim(SPECIES_BY_ID[id].dex, false)),
+        stats,
+      },
+      () => this.leaveHero(),
+    );
+  }
+
+  private leaveHero() {
+    if (this.state !== 'title') return;
+    audio.unlock();
+    audio.ui();
+    this.ui.hideHero();
+    this.showStarter();
+  }
 
   private showStarter() {
     this.state = 'starter';
@@ -404,14 +432,11 @@ export class Game {
       p.trapT = p.slowT = 0;
       if (!p.fainted) p.hp = Math.min(p.maxHp, p.hp + p.maxHp * 0.35);
     }
-    this.trainer.slowT = 0;
-    this.trainer.hp = Math.min(this.trainer.maxHp, this.trainer.hp + 15);
     for (const p of this.projectiles) this.dropSprite(p.sprite);
     this.projectiles = [];
     this.reticle.visible = false;
 
     const next = () => {
-      audio.ui();
       this.ui.hideModal();
       // Finishing an area means a stop at the Pokémon Center before the next one.
       if (this.round % ROUNDS_PER_AREA === 0) return this.showCenter();
@@ -428,7 +453,7 @@ export class Game {
     show();
   }
 
-  /** Between areas: Nurse Joy restores the whole party (and the trainer), and you choose who leads into the next area. */
+  /** Between areas: Nurse Joy restores the whole party, and you choose who leads into the next area. */
   private showCenter() {
     this.state = 'center';
     audio.playMusic(MUSIC.center);
@@ -440,10 +465,8 @@ export class Game {
       p.trapT = p.slowT = 0;
       this.checkEvolution(p); // a Rare Candy may have pushed a fainted Pokémon past its level
     }
-    this.trainer.hp = this.trainer.maxHp;
     const area = biomeFor(this.round + 1).name;
     const go = (lead: Mon | null) => {
-      audio.ui();
       this.ui.hideModal();
       if (lead && lead !== this.active) this.sendOut(lead, true);
       this.state = 'playing';
@@ -648,9 +671,6 @@ export class Game {
     if (k.has('a') || k.has('arrowleft')) x -= 1;
     if (k.has('d') || k.has('arrowright')) x += 1;
     const len = Math.hypot(x, z);
-    t.inv -= dt;
-    t.slowT -= dt;
-    this.dodge -= dt;
     this.dashCd -= dt;
     t.moving = len > 0;
     if (this.dashT > 0) {
@@ -659,9 +679,10 @@ export class Game {
       t.pos.z += this.dashDir.y * DASH_SPEED * dt;
       if (Math.random() < 0.6) this.fx.spawn('wisp', t.pos.clone().setY(0.4), { size: 0.9, life: 0.35, grow: 0.6, color: 0xdddddd });
     } else if (t.moving) {
-      const v = TRAINER_SPEED * (t.slowT > 0 ? 0.5 : 1);
-      t.pos.x += (x / len) * v * dt;
-      t.pos.z += (z / len) * v * dt;
+      // Glance off trunks and rocks rather than stopping dead on them.
+      const [sx, sz] = this.steer(t.pos, t.radius, x / len, z / len, 1);
+      t.pos.x += sx * TRAINER_SPEED * dt;
+      t.pos.z += sz * TRAINER_SPEED * dt;
       t.face(x, z);
     } else if (t.throwT <= 0) {
       t.face(this.aim.x - t.pos.x, this.aim.z - t.pos.z);
@@ -680,7 +701,6 @@ export class Game {
     this.dashDir.normalize();
     this.dashT = DASH_TIME;
     this.dashCd = DASH_CD;
-    this.dodge = DASH_TIME + 0.12; // i-frames
     audio.dash();
   }
 
@@ -826,7 +846,8 @@ export class Game {
     m.retarget -= dt;
     if (!m.target || !this.valid(m.target) || m.retarget <= 0) {
       m.retarget = 1 + Math.random();
-      m.target = this.nearest<Unit>(m.pos, [...(this.active?.alive ? [this.active] : []), this.trainer]);
+      // Only Pokémon battle: wild ones go for whoever you've sent out, never the trainer.
+      m.target = this.active?.alive ? this.active : null;
     }
     if (m.target) this.engage(m, m.target, dt, m.sp.speed * m.slowMul * 0.8);
   }
@@ -855,10 +876,10 @@ export class Game {
       void audio.cry(m.sp.id, 0.35);
     }
     if (spread) for (const w of this.wilds) if (w !== m && !w.aggro && w.alive && distXZ(w.pos, m.pos) < 3.5) this.alert(w, false);
-    this.hint('aggro', 'Wild Pokémon lurk in the grass and attack when you get close — approach on your terms.');
+    this.hint('aggro', 'Wild Pokémon lurk in the grass and attack your Pokémon when you get close — approach on your terms.');
   }
 
-  private engage(m: Mon, t: Unit, dt: number, speed: number) {
+  private engage(m: Mon, t: Mon, dt: number, speed: number) {
     const dx = t.pos.x - m.pos.x, dz = t.pos.z - m.pos.z;
     const d = Math.hypot(dx, dz);
     const reach = m.sp.range + m.radius + t.radius;
@@ -873,20 +894,20 @@ export class Game {
     const d = Math.hypot(dx, dz);
     if (d <= stop) return;
     const step = Math.min(speed * dt, d - stop);
-    m.pos.x += (dx / d) * step;
-    m.pos.z += (dz / d) * step;
+    const [sx, sz] = this.steer(m.pos, m.radius, dx / d, dz / d, d);
+    m.pos.x += sx * step;
+    m.pos.z += sz * step;
     m.moving = true;
-    m.face(dx, dz);
+    m.face(sx, sz);
     this.clampArena(m.pos);
   }
 
-  private valid(u: Unit) {
-    if (u instanceof Trainer) return u.hp > 0;
+  private valid(u: Mon) {
     return u.alive && (u.side === 'wild' ? this.wilds.includes(u) : u === this.active);
   }
 
-  private nearest<T extends Unit>(p: THREE.Vector3, list: T[]): T | null {
-    let best: T | null = null, bd = Infinity;
+  private nearest(p: THREE.Vector3, list: Mon[]): Mon | null {
+    let best: Mon | null = null, bd = Infinity;
     for (const u of list) {
       const d = distXZ(p, u.pos);
       if (d < bd) (bd = d), (best = u);
@@ -911,25 +932,47 @@ export class Game {
         b.p.z += dz * push * (b.w / tw);
       }
     }
-    // Trees, rocks, signs and graves inside the arena are solid: push units out of their footprint.
-    const solids: Solid[] = this.arena?.userData.solids ?? [];
+    // Tree trunks, rocks, signs and graves are solid: push units straight out, so they slide around the curve.
     for (const u of units) {
-      for (const s of solids) {
-        const r = u.r;
-        if (u.p.x < s.x0 - r || u.p.x > s.x1 + r || u.p.z < s.z0 - r || u.p.z > s.z1 + r) continue;
-        // Leave through the nearest side.
-        const out = [s.x0 - r - u.p.x, s.x1 + r - u.p.x, s.z0 - r - u.p.z, s.z1 + r - u.p.z];
-        const i = out.reduce((b, v, k) => (Math.abs(v) < Math.abs(out[b]) ? k : b), 0);
-        if (i < 2) u.p.x += out[i];
-        else u.p.z += out[i];
+      for (const s of this.solids()) {
+        const dx = u.p.x - s.x, dz = u.p.z - s.z, d = Math.hypot(dx, dz), min = s.r + u.r * SOLID_GIVE;
+        if (d >= min) continue;
+        if (d < 1e-4) u.p.x += min;
+        else (u.p.x = s.x + (dx / d) * min), (u.p.z = s.z + (dz / d) * min);
       }
     }
+  }
+
+  private solids(): Solid[] {
+    return this.arena?.userData.solids ?? [];
+  }
+
+  /**
+   * Bends a unit direction (dx, dz) around a solid ahead, so walkers curve past trunks and rocks instead of
+   * pressing into them. Returns the direction to move in (unit length).
+   */
+  private steer(p: THREE.Vector3, r: number, dx: number, dz: number, reach: number) {
+    let best: Solid | null = null, bestAlong = Infinity, side = 0, depth = 0;
+    for (const s of this.solids()) {
+      const sx = s.x - p.x, sz = s.z - p.z;
+      const along = sx * dx + sz * dz; // how far ahead the solid is
+      if (along <= 0 || along > Math.min(reach, STEER_LOOK + s.r) || along >= bestAlong) continue;
+      const lateral = dx * sz - dz * sx; // which side of our path its centre is on
+      const clear = s.r + r * SOLID_GIVE + 0.1;
+      if (Math.abs(lateral) >= clear) continue;
+      (best = s), (bestAlong = along), (side = lateral >= 0 ? -1 : 1), (depth = 1 - Math.abs(lateral) / clear);
+    }
+    if (!best) return [dx, dz] as const;
+    // Turn towards the free side: the more squarely we'd hit it, the harder the turn.
+    const k = 0.6 + 1.6 * depth;
+    const nx = dx + -dz * side * k, nz = dz + dx * side * k, n = Math.hypot(nx, nz);
+    return [nx / n, nz / n] as const;
   }
 
   // ───────────────────────────── combat ─────────────────────────────
 
   /** Starts a move: the attacker winds up (see animateMon) and the move lands when the wind-up ends. */
-  private attack(m: Mon, t: Unit) {
+  private attack(m: Mon, t: Mon) {
     let mv = m.sp.move;
     if (mv === MOVES.transform && t instanceof Mon) mv = t.sp.move; // Ditto copies whoever it fights
     else if (mv === MOVES.metronome) mv = pick(METRONOME);
@@ -961,9 +1004,9 @@ export class Game {
     if (a.t >= a.wind + ACT_FOLLOW) m.act = null;
   }
 
-  private useMove(m: Mon, t: Unit, mv: Move) {
+  private useMove(m: Mon, t: Mon, mv: Move) {
     if (!this.valid(t)) return;
-    const h = damage(m, t instanceof Mon ? t : null, mv, this.trainer.maxHp);
+    const h = damage(m, t, mv);
     if (h.dmg > 0) h.dmg = Math.max(1, Math.round(h.dmg * (m.side === 'party' ? this.partyAtkMul : wildPower(this.round))));
     audio.move(mv.type, mv.kind);
 
@@ -1026,7 +1069,7 @@ export class Game {
     }
   }
 
-  private launch(from: THREE.Vector3, target: Unit, src: Mon, mv: Move, delay: number, hit: Hit, real: boolean) {
+  private launch(from: THREE.Vector3, target: Mon, src: Mon, mv: Move, delay: number, hit: Hit, real: boolean) {
     const spray = mv.kind === 'spray';
     const sprite = this.fx.sprite(mv.fx, mv.size * (spray ? rand(0.8, 1.2) : 1));
     if (mv.tint !== undefined) sprite.material.color.setHex(mv.tint);
@@ -1065,13 +1108,8 @@ export class Game {
   }
 
   /** A move connects: damage, then its secondary effects (status, bind, drain, recoil). */
-  private land(t: Unit, h: Hit, src: Mon, mv: Move, from: THREE.Vector3, knock: number) {
+  private land(t: Mon, h: Hit, src: Mon, mv: Move, from: THREE.Vector3, knock: number) {
     if (!this.valid(t)) return;
-    if (t instanceof Trainer) {
-      if (mv.slow && this.dodge <= 0) t.slowT = SLOW_TIME;
-      if (h.dmg > 0) this.hit(t, h.dmg, 1, from, knock);
-      return;
-    }
     if (h.mult === 0) return this.hit(t, 0, 0);
     if (h.dmg > 0) this.hit(t, h.dmg, h.mult, from, knock, h.crit);
     if (!t.alive) {
@@ -1121,23 +1159,7 @@ export class Game {
     }
   }
 
-  private hit(t: Unit, dmg: number, mult: number, from?: THREE.Vector3, knock = 0, crit = false) {
-    if (t instanceof Trainer) {
-      if (t.inv > 0 || this.dodge > 0 || this.state !== 'playing') return;
-      t.hp -= dmg;
-      t.inv = 0.35;
-      this.knockback(t, from, knock);
-      this.shake = Math.max(this.shake, 0.25);
-      this.ui.hurt();
-      audio.hurt();
-      this.floater(t.pos, 2.1, `-${dmg}`, '#ff5a5a');
-      this.hint('hurt', 'Wild Pokémon go for you too — keep your team between you and them.');
-      if (t.hp <= 0) {
-        t.hp = 0;
-        this.gameOver('You were overwhelmed by wild Pokémon!');
-      }
-      return;
-    }
+  private hit(t: Mon, dmg: number, mult: number, from?: THREE.Vector3, knock = 0, crit = false) {
     if (!t.alive) return;
     if (mult === 0) {
       if (t.side === 'wild') this.floater(t.pos, t.height + 0.2, 'immune', '#aaaaaa');
@@ -1163,7 +1185,7 @@ export class Game {
     }
   }
 
-  private knockback(t: Unit, from: THREE.Vector3 | undefined, k: number) {
+  private knockback(t: Mon, from: THREE.Vector3 | undefined, k: number) {
     if (!from || !k) return;
     const dx = t.pos.x - from.x, dz = t.pos.z - from.z, d = Math.hypot(dx, dz) || 1;
     t.pos.x += (dx / d) * k;
@@ -1475,7 +1497,6 @@ export class Game {
 
     const t = this.trainer;
     t.animate(dt, this.dashT > 0 ? 16 : t.moving && this.state === 'playing' ? 8 : 0);
-    t.obj.visible = !(t.inv > 0 && Math.floor(this.time * 20) % 2);
   }
 
   private animateMon(m: Mon, dt: number) {
@@ -1660,7 +1681,8 @@ export class Game {
   private updateCamera(dt: number) {
     this.camFocus.lerp(this.trainer.pos, 1 - Math.exp(-6 * dt));
     const look = this.camFocus.clone().add(CAM_LEAD);
-    this.camera.position.copy(look).add(CAM_OFFSET);
+    // The title screen slowly circles the trainer.
+    this.camera.position.copy(look).add(this.state === 'title' ? CAM_OFFSET.clone().applyAxisAngle(UP, this.time * 0.08) : CAM_OFFSET);
     this.camera.lookAt(look);
     if (this.shake > 0.01) {
       this.camera.position.add(new THREE.Vector3(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(this.shake * 0.35));
@@ -1709,9 +1731,6 @@ export class Game {
       balls: this.pokeballs,
       ballName: BALLS[this.ball].name,
       ballIcon: icon(url.item(`${this.ball}-ball`)),
-      slowed: this.trainer.slowT > 0,
-      hp: this.trainer.hp,
-      maxHp: this.trainer.maxHp,
       hold: this.hold,
       muted: audio.muted,
       dash: clamp(1 - this.dashCd / DASH_CD, 0, 1),

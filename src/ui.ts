@@ -1,3 +1,5 @@
+import { audio } from './audio';
+
 export interface StatBar {
   label: string;
   value: number;
@@ -23,13 +25,18 @@ export interface HudState {
   balls: number;
   ballName: string;
   ballIcon: string;
-  hp: number;
-  maxHp: number;
-  slowed: boolean;
   hold: boolean;
   muted: boolean;
   dash: number; // 0..1, 1 = ready
   focus?: string;
+}
+
+/** The title screen: the trainer flanked by Pokémon, plus meta-progress from earlier runs. */
+export interface HeroSpec {
+  trainer: string; // overworld sheet URL; its first frame (facing down) is shown
+  frames: number;
+  lineup: string[]; // animated sprite URLs, left to right; the trainer stands in the middle
+  stats: { label: string; value: string }[];
 }
 
 export interface TypeChip {
@@ -100,18 +107,12 @@ export class UI {
           <div class="status-head"><span class="area" id="hud-area"></span><span class="round" id="hud-round"></span></div>
           <div class="progress"><div id="hud-progress"></div></div>
           <div class="status-sub" id="hud-left"></div>
-          <div class="trainer-hp">
-            <span class="label">Trainer</span>
-            <div class="bar"><div id="hud-hp"></div></div>
-            <span class="num" id="hud-hp-text"></span>
-          </div>
         </div>
         <div class="chips">
           <div class="chip" id="hud-balls"><img id="hud-ball-icon" alt="" /><b id="hud-ball-count"></b><span id="hud-ball-name"></span></div>
-          <div class="chip" id="hud-mode"></div>
+          <div class="chip mode" id="hud-mode"><span class="on-attack">⚔ Attacking</span><span class="on-hold">✋ Holding fire</span></div>
           <div class="chip dash" id="hud-dash"><span>Dash</span><div class="bar"><div id="hud-dash-bar"></div></div></div>
           <div class="chip focus" id="hud-focus"></div>
-          <div class="chip slowed" id="hud-slow">Slowed</div>
         </div>
       </div>
       <div class="target" id="target"></div>
@@ -122,8 +123,8 @@ export class UI {
       <div class="floaters" id="floaters"></div>
       <div class="toasts" id="toasts"></div>
       <div class="banner" id="banner"></div>
-      <div class="hurt" id="hurt"></div>
-      <div class="modal hidden" id="modal"></div>`;
+      <div class="modal hidden" id="modal"></div>
+      <div class="hero hidden" id="hero"></div>`;
   }
 
   setHud(s: HudState) {
@@ -136,21 +137,15 @@ export class UI {
     setText($('hud-ball-count'), `×${s.balls}`);
     setText($('hud-ball-name'), s.ballName);
     $('hud-balls').classList.toggle('empty', s.balls === 0);
-    const pct = (s.hp / s.maxHp) * 100;
-    const hp = $('hud-hp');
-    hp.style.width = `${pct}%`;
-    hp.style.background = hpColor(pct);
-    setText($('hud-hp-text'), `${Math.ceil(s.hp)}/${s.maxHp}`);
     const mode = $('hud-mode');
-    setText(mode, s.hold ? '✋ Holding fire' : '⚔ Attacking');
-    mode.className = `chip ${s.hold ? 'hold' : 'attack'}`;
+    const modeCls = `chip mode ${s.hold ? 'hold' : 'attack'}`;
+    if (mode.className !== modeCls) mode.className = modeCls;
     const dash = $('hud-dash-bar');
     dash.style.width = `${s.dash * 100}%`;
     dash.style.background = s.dash >= 1 ? 'var(--accent)' : '#55607a';
     const focus = $('hud-focus');
     focus.style.display = s.focus ? 'flex' : 'none';
     if (s.focus) setText(focus, `◎ Focus: ${s.focus}`);
-    $('hud-slow').style.display = s.slowed ? 'flex' : 'none';
     setHtml(
       $('help'),
       ['WASD move', '1-6 switch', 'Shift dash', 'Click throw', 'Right-click hold/attack', 'E focus', 'Esc pause', `M ${s.muted ? 'unmute' : 'mute'}`]
@@ -256,10 +251,41 @@ export class UI {
       // Ignore clicks for a moment so a mid-combat throw click can't pick an option by accident.
       btn.disabled = true;
       if (!c.locked) setTimeout(() => (btn.disabled = false), 450);
-      btn.addEventListener('click', c.onClick);
+      btn.addEventListener('click', () => {
+        audio.ui();
+        c.onClick();
+      });
       choices.appendChild(btn);
     }
     modal.classList.remove('hidden');
+  }
+
+  showHero(h: HeroSpec, onStart: () => void) {
+    const el = $('hero');
+    const mon = (src: string, i: number) => `<img class="hero-mon" style="--i:${i}" src="${src}" alt="" />`;
+    const half = Math.ceil(h.lineup.length / 2);
+    el.innerHTML = `
+      <div class="hero-inner">
+        <div class="hero-kicker">A Kanto roguelike</div>
+        <h1 class="hero-logo">Pokémon<span>Rogue</span></h1>
+        <div class="hero-stage">
+          ${h.lineup.slice(0, half).map(mon).join('')}
+          <div class="hero-trainer" style="background-image:url(${h.trainer});background-size:${h.frames * 100}% 100%"></div>
+          ${h.lineup.slice(half).map((s, i) => mon(s, i + half)).join('')}
+        </div>
+        <p class="hero-tag">Survive endless waves of wild Pokémon. Weaken them, catch them, and build a team of six.</p>
+        <button class="hero-start">Start</button>
+        <div class="hero-press">or press <kbd>Enter</kbd></div>
+        ${h.stats.length ? `<div class="hero-stats">${h.stats.map((s) => `<div><b>${s.value}</b><span>${s.label}</span></div>`).join('')}</div>` : ''}
+      </div>`;
+    el.querySelector('.hero-start')!.addEventListener('click', onStart);
+    el.classList.remove('hidden');
+    $('ui').classList.add('on-title');
+  }
+
+  hideHero() {
+    $('hero').classList.add('hidden');
+    $('ui').classList.remove('on-title');
   }
 
   hideModal() {
@@ -290,13 +316,6 @@ export class UI {
     el.innerHTML = `<h2>${title}</h2><p>${sub}</p>`;
     el.classList.remove('show');
     void el.offsetWidth; // restart animation
-    el.classList.add('show');
-  }
-
-  hurt() {
-    const el = $('hurt');
-    el.classList.remove('show');
-    void el.offsetWidth;
     el.classList.add('show');
   }
 

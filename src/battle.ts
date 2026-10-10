@@ -20,11 +20,6 @@ export const WILD_TEMPO = 1.9;
 export const LEADER_LEVELS = 2;
 /** Like the modern Exp. Share: the Pokémon that battled gets full experience, the rest of the party this much. */
 export const EXP_SHARE_BENCH = 0.5;
-/**
- * The trainer isn't a Pokémon: a hit takes the fraction of HP it would take from a sturdy (base 80) Pokémon of the
- * attacker's level, scaled by this. Keeps the trainer's 100 HP meaningful at Lv5 and Lv70 alike.
- */
-export const TRAINER_TAKEN = 0.28;
 /** Seconds a bind (Fire Spin, Clamp) or String Shot lasts. */
 export const TRAP_TIME = 4;
 export const SLOW_TIME = 4;
@@ -56,24 +51,15 @@ export interface Fighter {
   status: Status | null;
 }
 
-const REF_BASE = 80;
-const refStat = (level: number, hp = false) => {
-  const core = Math.floor(((2 * REF_BASE + 15) * level) / 100);
-  return hp ? core + level + 10 : core + 5;
-};
-
 export interface Hit {
   dmg: number;
   mult: number; // type effectiveness
   crit: boolean;
 }
 
-/**
- * The main-series damage formula: ((2L/5 + 2) · Power · A/D / 50 + 2) · crit · random · STAB · type.
- * `def` null means the trainer, who takes a share of what a sturdy reference Pokémon would (see TRAINER_TAKEN).
- */
-export function damage(att: Fighter, def: Fighter | null, mv: Move, trainerMaxHp = 100, typeless = false): Hit {
-  const mult = def && !typeless ? typeMultVs(mv.type, def.sp) : 1;
+/** The main-series damage formula: ((2L/5 + 2) · Power · A/D / 50 + 2) · crit · random · STAB · type. */
+export function damage(att: Fighter, def: Fighter, mv: Move): Hit {
+  const mult = typeMultVs(mv.type, def.sp);
   if (mv.power <= 0 && mv.fixed === undefined) return { dmg: 0, mult, crit: false };
   if (mult === 0) return { dmg: 0, mult, crit: false };
   let dmg: number;
@@ -83,7 +69,7 @@ export function damage(att: Fighter, def: Fighter | null, mv: Move, trainerMaxHp
   } else {
     const phys = mv.cat === 'physical';
     const A = phys ? att.stats.atk : att.stats.spa;
-    const D = def ? (phys || mv.vsDef ? def.stats.def : def.stats.spd) : refStat(att.level);
+    const D = phys || mv.vsDef ? def.stats.def : def.stats.spd;
     crit = Math.random() < (mv.highCrit ? 1 / 8 : 1 / 24);
     dmg = Math.floor(Math.floor((Math.floor((2 * att.level) / 5 + 2) * mv.power * A) / D) / 50) + 2;
     if (crit) dmg *= 1.5;
@@ -92,7 +78,6 @@ export function damage(att: Fighter, def: Fighter | null, mv: Move, trainerMaxHp
     dmg *= mult;
     if (phys && att.status === 'brn') dmg *= 0.5;
   }
-  if (!def) dmg = (dmg / refStat(att.level, true)) * trainerMaxHp * TRAINER_TAKEN;
   return { dmg: Math.max(1, Math.round(dmg)), mult, crit };
 }
 

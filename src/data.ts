@@ -538,6 +538,7 @@ export const FX_ALL = [...new Set([...Object.values(MOVES).flatMap((m: Move) => 
  * Each area uses the theme its FRLG map plays (Seafoam really does share Viridian Forest's, Safari Zone the evolution theme).
  */
 export const MUSIC = {
+  title: 'mus_title',
   wild: 'mus_vs_wild', // an area's last round: its evolved Pokémon shows up
   legend: 'mus_vs_legend',
   mewtwo: 'mus_vs_mewtwo',
@@ -551,6 +552,11 @@ export const MUSIC = {
     'mus_cycling', 'mus_evolution', 'mus_viridian_forest', 'mus_poke_mansion', 'mus_sevii_cave', 'mus_victory_road',
     'mus_rocket_hideout',
   ],
+};
+
+/** FireRed sound effects, which pokefirered also keeps as MIDI songs (played the same way as the music). */
+export const SE = {
+  select: 'se_select', // pressing A in a menu
 };
 
 /** Overworld sprite sheet for the trainer (pokefirered). */

@@ -1,4 +1,4 @@
-import type { MoveKind, PType } from './data';
+import { SE, type MoveKind, type PType } from './data';
 import { url } from './assets';
 import { createPlayer, type SongPlayer } from './music';
 
@@ -20,6 +20,7 @@ class AudioEngine {
   private gates = new Map<string, number>();
   private musicBus!: GainNode; // music volume; ducked under jingles and evolutions
   private jingleBus!: GainNode;
+  private sfxBus!: GainNode; // game sound effects played from FireRed's own sequences
   private music: SongPlayer | null = null;
   private musicName = '';
   private musicReq = 0; // guards against an older song finishing its load after a newer request
@@ -44,6 +45,10 @@ class AudioEngine {
       this.jingleBus = c.createGain();
       this.jingleBus.gain.value = MUSIC_VOL;
       this.jingleBus.connect(comp);
+      this.sfxBus = c.createGain();
+      this.sfxBus.gain.value = 0.8;
+      this.sfxBus.connect(comp);
+      void createPlayer(c, this.sfxBus, SE.select, false); // load it now so the first press isn't late
       this.noiseBuf = c.createBuffer(1, c.sampleRate, c.sampleRate);
       const d = this.noiseBuf.getChannelData(0);
       for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
@@ -287,11 +292,6 @@ class AudioEngine {
   faint() {
     this.tone(600, 80, 0.6, 'square', 0.05);
   }
-  hurt() {
-    if (!this.gate('hurt', 200)) return;
-    this.noise(0.2, 300, 80, 0.25, 'lowpass');
-    this.tone(150, 60, 0.2, 'square', 0.07);
-  }
   roundStart() {
     [392, 523, 659].forEach((f, i) => this.tone(f, f, 0.12, 'square', 0.05, i * 0.1));
     this.tone(784, 784, 0.3, 'square', 0.06, 0.3);
@@ -307,8 +307,10 @@ class AudioEngine {
   shiny() {
     [1568, 2093, 2637, 3136].forEach((f, i) => this.tone(f, f, 0.18, 'sine', 0.05, i * 0.07));
   }
+  /** FireRed's menu select sound: what pressing A makes. */
   ui() {
-    this.tone(880, 880, 0.05, 'square', 0.04);
+    if (!this.ctx || !this.gate('ui', 60)) return;
+    void createPlayer(this.ctx, this.sfxBus, SE.select, false).then((p) => p?.start());
   }
 }
 
