@@ -5,6 +5,8 @@ import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FX_ALL, ITEMS, MUSIC, SPECIES, TRAINER_SHEET } from '../src/data.ts';
+import { ENV, type TileArt } from '../src/env.ts';
+import { encodePng, makeTileset, renderCutout, renderGrid, spriteFrame } from './gba-tiles.ts';
 
 const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', 'public', 'assets');
 const POKEAPI = 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites';
@@ -55,7 +57,7 @@ async function run([url, rel]: [string, string]) {
 // Each song is the game's MIDI plus a JSON of the instruments its voicegroup uses (squares, wave channel, noise and
 // sampled instruments), so src/music.ts can play it close to how the GBA's m4a engine does.
 
-const SONGS = [...new Set([MUSIC.wild, MUSIC.legend, MUSIC.mewtwo, MUSIC.victory, MUSIC.caught, ...MUSIC.areas])];
+const SONGS = [...new Set(Object.values(MUSIC).flat())];
 const SRC_FILES = ['sound/voice_groups.inc', 'sound/keysplit_tables.inc', 'sound/direct_sound_data.inc', 'sound/programmable_wave_data.inc', 'sound/songs/midi/midi.cfg'];
 
 /** Downloads the music sources, writes music/<song>.json, and returns the sample downloads still needed. */
@@ -169,6 +171,57 @@ async function buildMusic(): Promise<[string, string][]> {
   return [...samples].map((f): [string, string] => [`${PRET}/${f}`, `music/samples/${f.split('/').pop()}`]);
 }
 
+// ───────────── FireRed environment art ─────────────
+// Renders every ENV entry (src/env.ts) from the decomp's tilesets and object sprites into env/<name>.png.
+
+async function buildEnv() {
+  const arts = Object.entries(ENV);
+  const tileArts = arts.filter((a): a is [string, TileArt] => 'grid' in a[1]);
+  const sets = new Set(tileArts.flatMap(([, a]) => [`primary/${a.prim}`, `secondary/${a.sec}`]));
+  const files: [string, string][] = [];
+  for (const set of sets) {
+    for (const f of ['tiles.png', 'metatiles.bin']) files.push([`${PRET}/data/tilesets/${set}/${f}`, `env/src/${set}/${f}`]);
+    // FRLG maps take palettes 0-6 from the primary tileset and 7-12 from the secondary.
+    for (let i = set.startsWith('primary') ? 0 : 7; i < (set.startsWith('primary') ? 7 : 13); i++) {
+      const pal = `palettes/${String(i).padStart(2, '0')}.pal`;
+      files.push([`${PRET}/data/tilesets/${set}/${pal}`, `env/src/${set}/${pal}`]);
+    }
+  }
+  for (const [, a] of arts) if ('sprite' in a) files.push([`${PRET}/graphics/object_events/pics/${a.sprite}.png`, `env/src/${a.sprite}.png`]);
+  await runAll(files);
+  const read = (rel: string) => readFile(join(OUT, rel)).catch(() => null);
+  const loadSet = async (set: string) => {
+    const pals: string[] = [];
+    for (let i = 0; i < 16; i++) pals.push((await read(`env/src/${set}/palettes/${String(i).padStart(2, '0')}.pal`))?.toString() ?? '');
+    const tiles = await read(`env/src/${set}/tiles.png`), meta = await read(`env/src/${set}/metatiles.bin`);
+    return tiles && meta ? { tiles, meta, pals } : null;
+  };
+  await mkdir(join(OUT, 'env'), { recursive: true });
+  for (const [name, a] of arts) {
+    try {
+      let img;
+      if ('sprite' in a) {
+        const src = await read(`env/src/${a.sprite}.png`);
+        if (!src) continue;
+        img = spriteFrame(src, a.w, a.h);
+      } else {
+        const p = await loadSet(`primary/${a.prim}`), sec = await loadSet(`secondary/${a.sec}`);
+        if (!p || !sec) continue;
+        const ts = makeTileset(p, sec);
+        img = a.bg ? renderCutout(ts, a.grid, a.bg) : renderGrid(ts, a.grid);
+        if (a.quad !== undefined) {
+          const qx = (a.quad & 1) * 8, qy = (a.quad >> 1) * 8, src = img.px.slice();
+          for (let y = 0; y < img.h; y++)
+            for (let x = 0; x < img.w; x++) img.px.set(src.subarray(((qy + (y % 8)) * img.w + qx + (x % 8)) * 4, ((qy + (y % 8)) * img.w + qx + (x % 8)) * 4 + 4), (y * img.w + x) * 4);
+        }
+      }
+      await writeFile(join(OUT, `env/${name}.png`), encodePng(img));
+    } catch (e) {
+      failed.push(`env/${name}.png: ${(e as Error).message}`);
+    }
+  }
+}
+
 async function runAll(list: [string, string][]) {
   const queue = [...list];
   await Promise.all(Array.from({ length: 8 }, async () => {
@@ -177,6 +230,7 @@ async function runAll(list: [string, string][]) {
 }
 await runAll(jobs);
 await runAll(await buildMusic());
+await buildEnv();
 
 console.log(`assets: ${fetched} downloaded, ${skipped} cached, ${failed.length} failed`);
 for (const f of failed) console.warn(`  ✗ ${f}`);

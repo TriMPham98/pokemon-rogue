@@ -543,6 +543,8 @@ export const MUSIC = {
   mewtwo: 'mus_vs_mewtwo',
   victory: 'mus_victory_wild',
   caught: 'mus_caught_intro', // the "Gotcha!" fanfare
+  center: 'mus_poke_center',
+  heal: 'mus_heal', // the Pokémon Center healing jingle
   // one per area, in BIOMES order
   areas: [
     'mus_route1', 'mus_viridian_forest', 'mus_mt_moon', 'mus_route24', 'mus_route11', 'mus_mt_moon', 'mus_poke_tower',

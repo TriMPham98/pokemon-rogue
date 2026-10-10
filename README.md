@@ -1,7 +1,7 @@
 # Pokémon Rogue (prototype)
 
-A 3D roguelike in the browser: pick a starter, survive endless rounds of wild Pokémon,
-weaken them and throw Poké Balls to build a party of up to six that fights for you.
+A semi-3D roguelike in the browser: pick a starter, survive endless rounds of wild Pokémon,
+weaken them and throw Poké Balls to build a party of up to six, one of which battles at a time.
 
 ```sh
 npm install
@@ -13,8 +13,10 @@ npm run dev      # fetches game assets into public/assets on first run
 `npm run assets` (run automatically before `dev`/`build`) downloads into `public/assets/`:
 
 - Static Pokémon sprites and item icons from [PokeAPI/sprites](https://github.com/PokeAPI/sprites)
-- Red's overworld sprite sheet and FireRed/LeafGreen's music (MIDI sequences, voicegroups and instrument samples)
-  from [pret/pokefirered](https://github.com/pret/pokefirered)
+- From [pret/pokefirered](https://github.com/pret/pokefirered): Red's overworld sprite, FireRed/LeafGreen's music
+  (MIDI sequences, voicegroups and instrument samples), and the environment art — ground tiles, tall grass, trees,
+  fences, signs, rocks, graves and the Pokémon Center are rendered from the game's own tilesets and object sprites
+  (`scripts/gba-tiles.ts`, picked in `src/env.ts`) into `public/assets/env/`
 - Black/White animated sprites, cries and battle-effect sprites from [Pokémon Showdown](https://play.pokemonshowdown.com)
 - Capture rates, base experience and growth rates come from [PokeAPI's data](https://github.com/PokeAPI/pokeapi) (baked into `src/data.ts`)
 
@@ -30,9 +32,10 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
 | WASD / arrows | Move the trainer |
 | Mouse | Aim (hovering a wild Pokémon locks on) |
 | Click / Space | Throw a Poké Ball |
-| Right-click / E | Focus the whole team on a wild Pokémon (again to clear) |
+| 1-6 / click a party card | Switch which Pokémon is out |
+| Right-click / F | Toggle between attacking and holding fire (to set up catches) |
+| E | Focus your Pokémon on the wild Pokémon under the cursor (again to clear) |
 | Shift | Dash (brief invulnerability, 1.4s cooldown) |
-| F | Toggle party between attacking and holding fire (to set up catches) |
 | Esc / P | Pause |
 | M | Mute |
 
@@ -51,7 +54,12 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
 - Wild levels follow the journey: Lv2-4 on Route 1 up to the 70s in Cerulean Cave, where Mewtwo is Lv70 like in
   FireRed. Balance knobs for the horde format (wild attacks ease in over the first three areas, wild Pokémon act less
   often than your team, encounters come one at a time early on) live at the top of `src/battle.ts`.
-- Your party auto-battles nearby wild Pokémon with each species' signature move. Each move has its own wind-up
+- One Pokémon is out at a time and auto-battles with its species' signature move; switch with 1-6 to play type
+  matchups. When it faints the next one comes out. The one battling gets full experience, the rest half (Exp. Share).
+- Wild Pokémon appear in the tall grass (or cave hollows) and loiter there until you or your Pokémon come close —
+  then a "!" pops up and they (and their neighbours) attack. Your Pokémon only goes after ones that are fighting
+  you, so you can walk up to a quiet one and throw a ball.
+- Each move has its own wind-up
   animation (lunges, leaps and ground-pounds, charging glows, psychic levitation) before the effect lands.
   Ditto copies its target's move; Mew's Metronome picks a random one each time.
 - Wild Pokémon under 35% HP get a pulsing yellow ring. Hovering a wild Pokémon shows its level, types, status, HP,
@@ -61,8 +69,10 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
   - by stone — Fire, Water, Thunder, Leaf and Moon Stones, as in the originals. Stones show up as round rewards only when someone can use one,
     and an area's last round always offers one. Eevee lets you choose Vaporeon, Jolteon or Flareon.
   - party cards show a purple level badge or stone icon for how each Pokémon evolves next
-- Clearing a round plays the victory fanfare and gives +2 Poké Balls, a 35% heal, status cured, and 1 of 3 item
+- Clearing a round plays the victory theme and gives +2 Poké Balls, a 35% heal, status cured, and 1 of 3 item
   rewards (Great/Ultra Ball upgrades, Full Heal, Rare Candy, …).
+- After an area's last round you stop at a Pokémon Center: the healing jingle plays, the whole party (fainted ones
+  too) and the trainer are fully restored, and you pick who leads into the next area.
 - An area's 5th round ends with a strong wild Pokémon (★, orange arrow, the FRLG wild-battle theme): an evolved form
   of one of the area's basic Pokémon a few levels up — Pidgeotto on Route 1, Butterfree in Viridian Forest.
 - Every 5 rounds you move to the next area of Kanto, in story order: Route 1 → Viridian Forest → Mt. Moon →

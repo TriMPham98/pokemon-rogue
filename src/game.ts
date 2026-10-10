@@ -1,16 +1,17 @@
 import * as THREE from 'three';
 import { type Species, EVOLVED, FX_ALL, ITEMS, MOVES, MUSIC, SHINY_ODDS, SPECIES, SPECIES_BY_ID, STARTERS, STONE_NAME, TRAINER_SHEET, STAT_KEYS, STAT_LABEL, TYPE_COLOR, expAt, hex, typeLabel, typeMultVs, type Evo, type Move, type MoveKind, type Status } from './data';
-import { LEADER_LEVELS, BALLS, calcStats, SLOW_TIME, STATUS_DOT, TRAP_TIME, catchChance, damage, WILD_TEMPO, expGain, wildLevel, wildPower, type BallKind, type Hit } from './battle';
+import { LEADER_LEVELS, BALLS, calcStats, SLOW_TIME, STATUS_DOT, TRAP_TIME, catchChance, damage, WILD_TEMPO, EXP_SHARE_BENCH, expGain, wildLevel, wildPower, type BallKind, type Hit } from './battle';
 import { ARENA_R } from './models';
-import { BIOMES, ROUNDS_PER_AREA, areaRound, biomeFor, buildArena, disposeArena, sunFor, type Biome } from './biomes';
+import { BIOMES, ROUNDS_PER_AREA, areaRound, biomeFor, buildArena, disposeArena, sunFor, type Biome, type Zone } from './biomes';
 import { UNLOCKS, finishRun, register, save } from './progress';
 import { ACT_FOLLOW, Mon, Trainer, weakRingMat, type Unit } from './entities';
 import { Effects } from './fx';
 import { audio } from './audio';
 import { icon, preload, url } from './assets';
+import { ENV } from './env';
 import { UI, statRow, type Arrow, type CardSpec, type TypeChip } from './ui';
 
-type State = 'loading' | 'starter' | 'playing' | 'paused' | 'reward' | 'swap' | 'gameover';
+type State = 'loading' | 'starter' | 'playing' | 'paused' | 'reward' | 'swap' | 'center' | 'gameover';
 
 interface Projectile {
   sprite: THREE.Sprite;
@@ -52,6 +53,9 @@ interface Reward {
 }
 
 const PARTY_MAX = 6;
+const AGGRO_R = 5.5; // wild Pokémon notice you (or your Pokémon) this close
+const SWITCH_CD = 1.2; // seconds between switching Pokémon
+const FAINT_SWITCH = 1.1; // the next Pokémon comes out this long after one faints
 const THROW_RANGE = 14;
 const TRAINER_SPEED = 7;
 const CAM_OFFSET = new THREE.Vector3(0, 12, 12);
@@ -161,6 +165,10 @@ export class Game {
 
   readonly trainer = new Trainer(TRAINER_SHEET);
   party: Mon[] = [];
+  /** The one Pokémon out of its ball; the rest of the party waits, like in the games. */
+  active: Mon | null = null;
+  private switchCd = 0;
+  private faintSwitch = -1;
   private wilds: Mon[] = [];
   private dying: Mon[] = [];
   private projectiles: Projectile[] = [];
@@ -217,7 +225,7 @@ export class Game {
     Object.assign(s.shadow.camera, { left: -24, right: 24, top: 24, bottom: -24, near: 1, far: 70 });
     s.shadow.bias = -0.0005;
     this.scene.add(s, s.target);
-    this.setBiome(BIOMES[0]);
+    this.setBiome(BIOMES[0], false); // the arena itself is built once its FireRed art has loaded
     this.scene.add(this.trainer.obj);
 
     this.reticle = new THREE.Mesh(
@@ -243,6 +251,7 @@ export class Game {
     }
 
     this.bindInput();
+    this.ui.onPartyClick = (i) => this.switchTo(i);
     this.resize();
     this.loop();
     void this.load();
@@ -251,16 +260,19 @@ export class Game {
   // ───────────────────────────── setup / input ─────────────────────────────
 
   private async load() {
+    // The arena's art first, so the world never shows placeholder textures.
+    this.ui.showModal('Loading…', '', []);
+    await preload(Object.keys(ENV).map(url.env), () => {});
+    this.setBiome(this.biome);
     const srcs = [
       ...SPECIES.flatMap((s) => [url.front(s.dex), url.back(s.dex), url.front(s.dex, true), url.back(s.dex, true)]),
       ...FX_ALL.map(url.fx),
       ...ITEMS.map(url.item),
     ];
-    this.ui.showModal('Loading…', '', []);
     const missing = await preload(srcs, (done, total) => {
       const p = document.querySelector('#modal p');
       if (p) p.textContent = `${done} / ${total} sprites`;
-    });
+    }); // counts every failed load so far, the arena art included
     if (!missing) return this.showStarter();
     this.ui.showModal(
       'Some assets are missing',
@@ -279,6 +291,7 @@ export class Game {
       if (e.repeat) return;
       if (k === ' ') this.throwBall();
       if (k === 'f') this.toggleHold();
+      if (k >= '1' && k <= '6') this.switchTo(Number(k) - 1);
       if (k === 'm') audio.toggleMute();
       if (k === 'shift') this.dash();
       if (k === 'e') this.setFocus(this.aimMon);
@@ -294,7 +307,7 @@ export class Game {
     el.addEventListener('pointermove', (e) => this.mouse.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1));
     el.addEventListener('pointerdown', (e) => {
       if (e.button === 0) this.throwBall();
-      if (e.button === 2) this.setFocus(this.aimMon);
+      if (e.button === 2) this.toggleHold();
     });
     el.addEventListener('contextmenu', (e) => e.preventDefault());
   }
@@ -351,10 +364,10 @@ export class Game {
     );
   }
 
-  private setBiome(b: Biome) {
+  private setBiome(b: Biome, build = true) {
     if (this.arena) disposeArena(this.arena);
-    this.arena = buildArena(b);
-    this.scene.add(this.arena);
+    this.arena = build ? buildArena(b) : null;
+    if (this.arena) this.scene.add(this.arena);
     (this.scene.background as THREE.Color).setHex(b.sky);
     this.scene.fog!.color.setHex(b.sky);
     this.hemi.intensity = b.light;
@@ -367,7 +380,7 @@ export class Game {
 
   private startRound(n: number) {
     this.round = n;
-    this.toSpawn = Math.min(26, 2 + n * 2);
+    this.toSpawn = Math.min(16, 3 + Math.floor(n * 0.8));
     this.leaderPending = n % ROUNDS_PER_AREA === 0;
     this.roundTotal = this.toSpawn + (this.leaderPending ? 1 : 0);
     this.spawnTimer = 1.5;
@@ -378,12 +391,12 @@ export class Game {
     this.ui.banner(newArea ? b.name : `Round ${n}`, newArea ? `Round ${n} · a new area` : this.leaderPending ? 'Something stronger lurks nearby…' : 'Wild Pokémon incoming!');
     audio.roundStart();
     audio.playMusic(b.music);
-    if (n === 1) this.hint('move', 'Move with WASD — your Pokémon follow you and battle on their own.');
+    if (n === 1) this.hint('move', 'Wild Pokémon wait in the tall grass. Walk over with WASD — your Pokémon battles on its own.');
   }
 
   private endRound() {
     this.state = 'reward';
-    audio.jingle(MUSIC.victory, true);
+    audio.playMusic(MUSIC.victory);
     this.pokeballs += 2;
     for (const p of this.party) {
       p.act = null;
@@ -400,6 +413,8 @@ export class Game {
     const next = () => {
       audio.ui();
       this.ui.hideModal();
+      // Finishing an area means a stop at the Pokémon Center before the next one.
+      if (this.round % ROUNDS_PER_AREA === 0) return this.showCenter();
       this.state = 'playing';
       this.startRound(this.round + 1);
     };
@@ -411,6 +426,44 @@ export class Game {
     const show = () => this.ui.showModal(`Round ${this.round} cleared!`, '+2 Poké Balls, status cured and 35% HP restored. Pick a reward:', cards);
     if (offers.length && (this.round % ROUNDS_PER_AREA === 0 || Math.random() < 0.5)) cards[0] = this.stoneCard(pick(offers), next, show);
     show();
+  }
+
+  /** Between areas: Nurse Joy restores the whole party (and the trainer), and you choose who leads into the next area. */
+  private showCenter() {
+    this.state = 'center';
+    audio.playMusic(MUSIC.center);
+    setTimeout(() => this.state === 'center' && void audio.jingle(MUSIC.heal), 900);
+    for (const p of this.party) {
+      p.fainted = false;
+      p.hp = p.maxHp;
+      p.status = null;
+      p.trapT = p.slowT = 0;
+      this.checkEvolution(p); // a Rare Candy may have pushed a fainted Pokémon past its level
+    }
+    this.trainer.hp = this.trainer.maxHp;
+    const area = biomeFor(this.round + 1).name;
+    const go = (lead: Mon | null) => {
+      audio.ui();
+      this.ui.hideModal();
+      if (lead && lead !== this.active) this.sendOut(lead, true);
+      this.state = 'playing';
+      this.startRound(this.round + 1);
+    };
+    this.ui.showModal(
+      'Pokémon Center',
+      `Your Pokémon are fighting fit! Choose who leads the way into <b>${area}</b>.`,
+      [
+        ...this.party.map((p) => ({
+          title: p.sp.name,
+          icon: icon(url.front(p.sp.dex, p.shiny)),
+          tag: `Lv${p.level} · ${typeLabel(p.sp)}`,
+          tagColor: hex(TYPE_COLOR[p.sp.type]),
+          body: p === this.active ? 'Leading now' : 'Lead with this one',
+          onClick: () => go(p),
+        })),
+      ],
+      `<div class="center-hero"><img class="pc" src="${icon(url.env('pokemonCenter'))}" alt="" /><img class="nurse" src="${icon(url.env('nurse'))}" alt="" /></div>`,
+    );
   }
 
   private stoneOffers() {
@@ -552,7 +605,7 @@ export class Game {
     this.uiTimer -= dt;
     if (this.uiTimer <= 0) {
       this.uiTimer = 0.1;
-      this.refreshHud();
+      if (this.state !== 'loading') this.refreshHud(); // item icons aren't loaded yet
     }
   };
 
@@ -561,11 +614,18 @@ export class Game {
     this.updateTrainer(dt);
     this.updateAim();
     this.updateSpawning(dt);
-    for (const m of [...this.party, ...this.wilds]) {
+    this.switchCd -= dt;
+    const out = this.active;
+    for (const m of [...(out ? [out] : []), ...this.wilds]) {
       if (m.act) this.tickAct(m, dt);
       if (m.alive) this.tickStatus(m, dt);
     }
-    for (const m of this.party) if (!m.fainted) this.updateParty(m, dt);
+    if (out && !out.fainted) this.updateParty(out, dt);
+    if (this.faintSwitch > 0 && (this.faintSwitch -= dt) <= 0) {
+      // The fainted Pokémon returns to its ball and the next one in line comes out.
+      const next = this.party.find((p) => !p.fainted);
+      if (next) this.sendOut(next);
+    }
     for (const m of this.wilds) if (m.alive) this.updateWild(m, dt);
     this.separate();
     this.updateProjectiles(dt);
@@ -658,8 +718,8 @@ export class Game {
   private updateSpawning(dt: number) {
     if (this.toSpawn > 0) {
       this.spawnTimer -= dt;
-      // Early encounters come one or two at a time, like the games; later the crowds grow.
-      const cap = Math.min(2 + Math.floor(this.round / 3), 1 + Math.floor(this.round / 2));
+      // They wait in the grass until you come close, so more can be around at once than are fighting you.
+      const cap = Math.min(7, 3 + Math.floor(this.round / 4));
       if (this.spawnTimer <= 0 && this.wilds.length < cap) {
         this.spawnWild(false);
         this.toSpawn--;
@@ -698,21 +758,19 @@ export class Game {
     const sp = leader ? this.leaderSpecies(level) : weightedPick(this.biome.wild.filter((e) => e.from <= stage), (e) => e.w).sp;
     const shiny = Math.random() < SHINY_ODDS;
     const m = new Mon(sp, level, 'wild', leader, shiny);
-    // The area's strong Pokémon brings the wild-battle theme; legendaries their own.
-    if (sp.legendary) audio.playMusic(sp.id === 'mewtwo' ? MUSIC.mewtwo : MUSIC.legend);
-    else if (leader) audio.playMusic(MUSIC.wild);
+    this.refreshMusic();
+    // Appear in a patch of tall grass (a hollow, underground) away from the trainer, and loiter there.
     const tp = this.trainer.pos;
-    let x = 0, z = 0;
-    for (let i = 0; i < 20; i++) {
-      const a = Math.random() * Math.PI * 2, r = rand(6, ARENA_R - 1);
-      x = Math.cos(a) * r;
-      z = Math.sin(a) * r;
-      if (Math.hypot(x - tp.x, z - tp.z) > 11) break;
-    }
-    m.pos.set(x, 0, z);
-    m.face(tp.x - x, tp.z - z);
+    const zones: Zone[] = this.arena?.userData.zones ?? [];
+    const far = zones.filter((z) => Math.hypot(z.x - tp.x, z.z - tp.z) > AGGRO_R + z.r + 3);
+    const home = pick(far.length ? far : zones.length ? zones : [{ x: 0, z: -12, r: 3 }]);
+    const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * home.r;
+    m.home = home;
+    m.pos.set(home.x + Math.cos(a) * r, 0, home.z + Math.sin(a) * r);
+    m.face(rand(-1, 1), rand(-1, 1));
     this.scene.add(m.obj);
     this.wilds.push(m);
+    if (leader) this.alert(m); // the area's strong Pokémon comes looking for you
     this.fx.spawn('shine', m.pos.clone().setY(0.6), { size: 1.2, life: 0.4, grow: 0.8 });
     if (shiny) {
       this.fx.sparkle(mid(m), 10, 0.5);
@@ -743,14 +801,14 @@ export class Game {
       m.retarget -= dt;
       if (!m.target || m.retarget <= 0) {
         m.retarget = 0.5;
-        m.target = this.nearest(m.pos, this.wilds.filter((w) => w.alive && distXZ(w.pos, tp) < 12));
+        // Fight what's fighting you; leave Pokémon still idling in the grass alone (E focuses one on purpose).
+        m.target = this.nearest(m.pos, this.wilds.filter((w) => w.alive && w.aggro && distXZ(w.pos, tp) < 12));
       }
     }
     if (m.target) this.engage(m, m.target, dt, m.sp.speed * m.slowMul);
     else {
       m.hp = Math.min(m.maxHp, m.hp + m.maxHp * 0.03 * dt); // catch breath out of combat
-      const a = (this.party.indexOf(m) / PARTY_MAX) * Math.PI * 2 + 0.6;
-      this.moveTo(m, tp.x + Math.cos(a) * 2.4, tp.z + Math.sin(a) * 2.4, m.sp.speed * 1.3, dt, 0.25);
+      this.moveTo(m, tp.x + 1.4, tp.z + 1.2, m.sp.speed * 1.3, dt, 0.25);
     }
   }
 
@@ -759,12 +817,45 @@ export class Game {
     m.cd -= dt;
     m.moving = false;
     if (this.windingUp(m)) return;
+    if (!m.aggro) {
+      const a = this.active;
+      const near = distXZ(m.pos, this.trainer.pos) < AGGRO_R || (a?.alive && distXZ(m.pos, a.pos) < AGGRO_R) || m.hp < m.maxHp;
+      if (!near) return this.loiter(m, dt);
+      this.alert(m);
+    }
     m.retarget -= dt;
     if (!m.target || !this.valid(m.target) || m.retarget <= 0) {
       m.retarget = 1 + Math.random();
-      m.target = this.nearest<Unit>(m.pos, [...this.party.filter((p) => p.alive), this.trainer]);
+      m.target = this.nearest<Unit>(m.pos, [...(this.active?.alive ? [this.active] : []), this.trainer]);
     }
     if (m.target) this.engage(m, m.target, dt, m.sp.speed * m.slowMul * 0.8);
+  }
+
+  /** Unaware wild Pokémon mill about their patch of grass. */
+  private loiter(m: Mon, dt: number) {
+    m.wanderT -= dt;
+    const h = m.home;
+    if (m.wanderT <= 0 && h) {
+      m.wanderT = rand(1.5, 4.5);
+      const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * h.r;
+      m.wanderTo.set(h.x + Math.cos(a) * r, h.z + Math.sin(a) * r);
+    }
+    // Amble, with pauses: only move during the first part of each wander.
+    if (m.wanderT > 1.2) this.moveTo(m, m.wanderTo.x, m.wanderTo.y, m.sp.speed * 0.3, dt, 0.2);
+  }
+
+  /** A wild Pokémon spots you: a "!" pops up, it cries, and nearby ones from the same patch join in. */
+  private alert(m: Mon, spread = true) {
+    if (m.aggro) return;
+    m.aggro = true;
+    m.retarget = 0;
+    this.floater(m.pos, m.height + 0.6, '!', '#ff5a5a', true);
+    if (!this.criedThisRound.has(`aggro:${m.sp.id}`)) {
+      this.criedThisRound.add(`aggro:${m.sp.id}`);
+      void audio.cry(m.sp.id, 0.35);
+    }
+    if (spread) for (const w of this.wilds) if (w !== m && !w.aggro && w.alive && distXZ(w.pos, m.pos) < 3.5) this.alert(w, false);
+    this.hint('aggro', 'Wild Pokémon lurk in the grass and attack when you get close — approach on your terms.');
   }
 
   private engage(m: Mon, t: Unit, dt: number, speed: number) {
@@ -791,7 +882,7 @@ export class Game {
 
   private valid(u: Unit) {
     if (u instanceof Trainer) return u.hp > 0;
-    return u.alive && (u.side === 'wild' ? this.wilds.includes(u) : this.party.includes(u));
+    return u.alive && (u.side === 'wild' ? this.wilds.includes(u) : u === this.active);
   }
 
   private nearest<T extends Unit>(p: THREE.Vector3, list: T[]): T | null {
@@ -805,7 +896,7 @@ export class Game {
 
   private separate() {
     const units: { p: THREE.Vector3; r: number; w: number }[] = [{ p: this.trainer.pos, r: this.trainer.radius, w: 0.2 }];
-    for (const m of this.party) if (m.alive) units.push({ p: m.pos, r: m.radius, w: 1 });
+    if (this.active?.alive) units.push({ p: this.active.pos, r: this.active.radius, w: 1 });
     for (const m of this.wilds) if (m.alive) units.push({ p: m.pos, r: m.radius, w: 1 });
     for (let i = 0; i < units.length; i++) {
       for (let j = i + 1; j < units.length; j++) {
@@ -1081,14 +1172,14 @@ export class Game {
     m.target = null;
     void audio.cry(m.sp.id, 0.5, 0.85);
     this.ui.toast(`${m.sp.name} fainted!`, 'bad');
-    if (this.party.every((p) => p.fainted)) this.gameOver('Your whole party fainted!');
+    if (this.party.every((p) => p.fainted)) return this.gameOver('Your whole party fainted!');
+    this.faintSwitch = FAINT_SWITCH;
   }
 
   private grantXp(w: Mon) {
-    const awake = this.party.filter((p) => !p.fainted).length;
     for (const p of this.party) {
       if (p.fainted || p.level >= 100) continue;
-      p.xp += expGain(w, p.level, awake);
+      p.xp += expGain(w, p.level, p === this.active ? 1 : EXP_SHARE_BENCH);
       while (p.level < 100 && p.xp >= expAt(p.sp.growth, p.level + 1)) this.levelUp(p);
     }
   }
@@ -1101,7 +1192,7 @@ export class Game {
     p.recalc();
     if (!p.fainted) p.hp += p.maxHp - old;
     audio.levelUp();
-    if (!p.fainted) this.floater(p.pos, p.height + 0.5, 'Lv up!', '#7dffa0');
+    if (p === this.active && !p.fainted) this.floater(p.pos, p.height + 0.5, 'Lv up!', '#7dffa0');
     this.checkEvolution(p);
   }
 
@@ -1112,6 +1203,11 @@ export class Game {
 
   evolve(p: Mon, to: Species) {
     if (p.evolveTo || p.fainted) return;
+    if (p !== this.active || this.state !== 'playing') {
+      // Out of sight in its ball (or between rounds): no sequence, just the news.
+      p.evolveTo = to;
+      return this.finishEvolution(p, true);
+    }
     p.evolveTo = to;
     p.evolving = EVOLVE_TIME;
     p.evoFlicker = 0;
@@ -1121,7 +1217,7 @@ export class Game {
     this.ui.toast(`What? ${p.sp.name} is evolving!`, 'good');
   }
 
-  private finishEvolution(m: Mon) {
+  private finishEvolution(m: Mon, quiet = false) {
     const old = m.sp.name;
     m.showDex(null);
     m.setSpecies(m.evolveTo!);
@@ -1129,29 +1225,68 @@ export class Game {
     register(m.sp.id, m.shiny);
     m.evolveTo = null;
     m.flash = 0.25;
-    this.fx.sparkle(mid(m), 12, 0.6);
-    this.fx.spawn('shine', mid(m), { size: m.h * 2, life: 0.5, grow: 0.6 });
     this.ui.toast(`${old} evolved into ${m.sp.name}!`, 'good');
     audio.evolved();
+    if (!quiet) {
+      this.fx.sparkle(mid(m), 12, 0.6);
+      this.fx.spawn('shine', mid(m), { size: m.h * 2, life: 0.5, grow: 0.6 });
+    }
     setTimeout(() => void audio.cry(m.sp.id, 0.7), 400);
     this.hint('evolved', `Evolved Pokémon are tougher and learn a new move — ${m.sp.name} now uses ${m.sp.move.name}.`);
     this.checkEvolution(m); // Rare Candy can push past two thresholds
   }
 
+  /** Recalls the Pokémon that's out (if any) and sends `m` out next to the trainer. */
+  private sendOut(m: Mon, quiet = false) {
+    if (m === this.active || m.fainted || !this.party.includes(m)) return;
+    const prev = this.active;
+    if (prev) {
+      prev.act = null;
+      prev.target = null;
+      if (!prev.fainted && !quiet) this.fx.spawn('shine', mid(prev), { size: 1.2, life: 0.3, grow: -0.6, color: 0xff6060 });
+      prev.obj.removeFromParent();
+    }
+    this.active = m;
+    this.faintSwitch = -1;
+    const tp = this.trainer.pos;
+    m.pos.set(tp.x + 1.2, 0, tp.z + 1.2);
+    this.clampArena(m.pos);
+    m.act = null;
+    m.target = null;
+    m.grow = 0;
+    m.cd = 0.5;
+    this.scene.add(m.obj);
+    this.switchCd = SWITCH_CD;
+    if (quiet) return;
+    this.fx.sparkle(mid(m), 6);
+    this.floater(m.pos, m.height + 0.7, `Go! ${m.sp.name}!`, '#ffffff');
+    void audio.cry(m.sp.id, 0.5);
+  }
+
+  /** Number keys / party cards: swap which Pokémon is out. */
+  switchTo(i: number) {
+    const m = this.party[i];
+    if (this.state !== 'playing' || !m || m === this.active) return;
+    if (m.fainted) return this.ui.toast(`${m.sp.name} has no energy left to battle!`, 'bad');
+    if (this.active?.evolveTo) return;
+    if (this.switchCd > 0 && !this.active?.fainted) return;
+    this.sendOut(m);
+    this.hint('switch', 'Switch Pokémon with 1-6 (or click a party card) to bring a better type matchup.');
+  }
+
   revive(p: Mon, frac: number) {
     p.fainted = false;
     p.hp = Math.round(p.maxHp * frac);
-    p.pos.copy(this.trainer.pos).add(new THREE.Vector3(rand(-1.5, 1.5), 0, rand(1, 2)));
-    p.grow = 0;
     this.checkEvolution(p); // may have passed a threshold via Rare Candy while fainted
   }
 
   private addToParty(m: Mon) {
     this.party.push(m);
-    this.scene.add(m.obj);
-    m.grow = 0;
-    this.fx.sparkle(mid(m), 6);
-    void audio.cry(m.sp.id, 0.5);
+    if (!this.active) this.sendOut(m);
+    else {
+      this.ui.toast(`${m.sp.name} joined your party — press ${this.party.length} to send it out.`, 'info');
+      this.hint('switch', 'Only one Pokémon fights at a time. Switch with 1-6 (or click a party card).');
+    }
     const stones = (m.sp.evos ?? []).filter((e) => e.stone).map((e) => STONE_NAME[e.stone!]);
     if (stones.length) this.hint('stone', `${m.sp.name} evolves with a ${stones.join(' / ')} — watch for it in round rewards.`);
   }
@@ -1241,6 +1376,7 @@ export class Game {
       w.capturing = false;
       this.fx.spawn('impact', at.setY(0.5), { size: 0.9, life: 0.2, grow: 0.5 });
       this.ui.toast(`Oh no! ${w.sp.name} broke free!`, 'warn');
+      this.alert(w);
       audio.breakFree();
       this.hint('hold', 'Tip: press F so your team holds fire while you line up a catch.');
       return;
@@ -1288,11 +1424,13 @@ export class Game {
           tagColor: hex(TYPE_COLOR[p.sp.type]),
           body: `Lv${p.level} · ${p.fainted ? 'Fainted' : `${Math.ceil(p.hp)}/${p.maxHp} HP`}`,
           onClick: () => {
+            const wasOut = p === this.active;
             p.dispose();
             this.party[i] = nm;
-            this.scene.add(nm.obj);
-            nm.grow = 0;
-            void audio.cry(nm.sp.id, 0.5);
+            if (wasOut) {
+              this.active = null;
+              this.sendOut(nm);
+            } else void audio.cry(nm.sp.id, 0.5);
             resume();
           },
         })),
@@ -1312,7 +1450,7 @@ export class Game {
       this.focusRing.scale.setScalar(Math.max(1, f.radius * 1.8));
       this.focusRing.rotation.z += dt * 2;
     }
-    for (const m of this.party) this.animateMon(m, dt);
+    if (this.active) this.animateMon(this.active, dt);
     for (const m of this.wilds) this.animateMon(m, dt);
     this.dying = this.dying.filter((m) => {
       m.dying -= dt;
@@ -1541,7 +1679,15 @@ export class Game {
     };
   }
 
+  /** The area theme, or a battle theme while the area's strong Pokémon or a legendary is around. */
+  private refreshMusic() {
+    if (this.state !== 'playing') return;
+    const legend = this.wilds.find((w) => w.sp.legendary);
+    audio.playMusic(legend ? (legend.sp.id === 'mewtwo' ? MUSIC.mewtwo : MUSIC.legend) : this.wilds.some((w) => w.leader) ? MUSIC.wild : this.biome.music);
+  }
+
   private refreshHud() {
+    this.refreshMusic();
     this.ui.setHud({
       area: this.biome.name,
       round: this.round,
@@ -1576,6 +1722,7 @@ export class Game {
         evolving: p.evolveTo !== null,
         evoLevel: p.sp.evos?.find((e) => e.level)?.level,
         evoStones: (p.sp.evos ?? []).filter((e) => e.stone).map((e) => icon(url.item(e.stone!))),
+        active: p === this.active,
       })),
     );
   }

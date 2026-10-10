@@ -23,6 +23,7 @@ class AudioEngine {
   private music: SongPlayer | null = null;
   private musicName = '';
   private musicReq = 0; // guards against an older song finishing its load after a newer request
+  private musicStarted = false;
 
   /** Must be called from a user gesture before anything is audible. */
   unlock() {
@@ -48,8 +49,9 @@ class AudioEngine {
       for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     }
     if (this.ctx.state === 'suspended') void this.ctx.resume();
-    // Music requested before the first gesture starts now.
-    if (this.musicName && !this.music) {
+    // Music requested before the first gesture starts now (once: later gestures find it playing or loading).
+    if (this.musicName && !this.musicStarted) {
+      this.musicStarted = true;
       const name = this.musicName;
       this.musicName = '';
       this.playMusic(name);
@@ -90,16 +92,24 @@ class AudioEngine {
     src.start();
   }
 
-  /** Crossfades to a looping song (no-op if it's already playing). */
+  /**
+   * Crossfades to a looping song (no-op if it's already playing or loading). Only the latest request ever starts:
+   * a song that finishes loading after something newer was asked for is dropped, so tracks can't pile up.
+   */
   playMusic(name: string) {
     if (this.musicName === name) return;
     this.musicName = name;
     if (!this.ctx) return; // starts on unlock()
+    this.musicStarted = true;
+    this.stopJingles();
     this.stopMusic(false);
     const req = ++this.musicReq;
-    void this.startSong(name, true).then((p) => {
-      if (p && req !== this.musicReq) this.fadeOut(p, 0.2);
-      else if (p) this.music = p;
+    void this.loadSong(name, true).then((p) => {
+      if (!p) return;
+      if (req !== this.musicReq) return p.stop();
+      this.music = p;
+      this.fadeIn(p, 0.5);
+      p.start();
     });
   }
 
@@ -110,29 +120,41 @@ class AudioEngine {
     if (reset) this.musicName = '';
   }
 
-  /** Plays a fanfare once (round won, Pokémon caught); the music either ducks underneath or stops for it. */
-  async jingle(name: string, stopMusic = false) {
+  private jingles = new Set<SongPlayer>();
+
+  /** Plays a fanfare once (Pokémon caught, healed) with the music ducked underneath until it ends. */
+  async jingle(name: string) {
     if (!this.ctx) return;
-    if (stopMusic) this.stopMusic();
-    else this.setMusicVol(MUSIC_VOL * 0.12, 0.1);
-    const p = await this.startSong(name, false);
-    if (stopMusic) return;
-    if (p) await p.done;
-    this.setMusicVol(MUSIC_VOL, 0.8);
+    this.setMusicVol(MUSIC_VOL * 0.12, 0.1);
+    const req = this.musicReq;
+    const p = await this.loadSong(name, false);
+    // Dropped if the music changed while it loaded (e.g. the round ended): a late fanfare would talk over it.
+    if (!p || req !== this.musicReq) {
+      p?.stop();
+      if (!this.jingles.size) this.setMusicVol(MUSIC_VOL, 0.5);
+      return;
+    }
+    this.jingles.add(p);
+    p.start();
+    await p.done;
+    this.jingles.delete(p);
+    if (!this.jingles.size) this.setMusicVol(MUSIC_VOL, 0.8);
   }
 
-  private async startSong(name: string, loop: boolean) {
-    const ctx = this.ctx!;
-    const p = await createPlayer(ctx, loop ? this.musicBus : this.jingleBus, name, loop);
-    if (!p) return null;
-    if (loop) {
-      // Fade in to the song's own volume.
-      const v = p.out.gain.value;
-      p.out.gain.setValueAtTime(0, ctx.currentTime);
-      p.out.gain.linearRampToValueAtTime(v, ctx.currentTime + 0.5);
-    }
-    p.start();
-    return p;
+  private stopJingles() {
+    for (const j of this.jingles) this.fadeOut(j, 0.3);
+    this.jingles.clear();
+    this.setMusicVol(MUSIC_VOL, 0.3);
+  }
+
+  private loadSong(name: string, loop: boolean) {
+    return createPlayer(this.ctx!, loop ? this.musicBus : this.jingleBus, name, loop);
+  }
+
+  private fadeIn(p: SongPlayer, s: number) {
+    const t = this.ctx!.currentTime, v = p.out.gain.value;
+    p.out.gain.setValueAtTime(0, t);
+    p.out.gain.linearRampToValueAtTime(v, t + s);
   }
 
   private fadeOut(p: SongPlayer, s: number) {

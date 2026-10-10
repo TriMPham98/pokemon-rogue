@@ -12,6 +12,7 @@ export const url = {
   fx: (name: string) => `${BASE}/fx/${name}.png`,
   item: (name: string) => `${BASE}/items/${name}.png`,
   cry: (id: string) => `${BASE}/cries/${id}.mp3`,
+  env: (name: string) => `${BASE}/env/${name}.png`,
   musicMidi: (name: string) => `${BASE}/music/${name}.mid`,
   musicData: (name: string) => `${BASE}/music/${name}.json`,
   musicSample: (name: string) => `${BASE}/music/samples/${name}.wav`,

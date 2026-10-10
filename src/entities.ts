@@ -70,6 +70,11 @@ export class Mon {
   statusTick = 0; // seconds until the next poison/burn chip
   trapT = 0; // >0 while bound by Fire Spin / Clamp
   slowT = 0; // >0 while slowed by String Shot
+  // Wild behaviour: loiter around `home` until something comes close, then fight.
+  home: { x: number; z: number; r: number } | null = null;
+  aggro = false;
+  wanderT = 0;
+  readonly wanderTo = new THREE.Vector2();
   cd = Math.random() * 0.8;
   flash = 0;
   hurtT = 0; // recent damage, drives the party card flash

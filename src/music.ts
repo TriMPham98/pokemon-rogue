@@ -386,7 +386,9 @@ export class SongPlayer {
 
   private pump() {
     const { events, loopStart, loopEnd } = this.song;
-    const horizon = this.ctx.currentTime + 0.35;
+    // Look further ahead while the tab is hidden: background timers only fire about once a second.
+    const now = this.ctx.currentTime;
+    const horizon = now + (document.hidden ? 1.5 : 0.35);
     for (;;) {
       const e = events[this.idx];
       const pastLoop = !e || (this.loop && e.t >= loopEnd);
@@ -405,7 +407,9 @@ export class SongPlayer {
       const at = this.offset + e.t;
       if (at > horizon) return;
       this.idx++;
-      this.apply(e, Math.max(at, this.ctx.currentTime), this.loop ? loopEnd - e.t : Infinity);
+      // Fell behind (the tab was throttled): skip stale notes instead of firing them all at once.
+      if (e.k === 'note' && at < now - 0.05) continue;
+      this.apply(e, Math.max(at, now), this.loop ? loopEnd - e.t : Infinity);
     }
   }
 
@@ -465,8 +469,8 @@ export class SongPlayer {
       if (s < 255) p.setTargetAtTime(peak * (s / 255), at + att, tau(d));
       const off = at + Math.max(dur, att);
       holdAt(p, off);
-      p.setTargetAtTime(0, off, tau(r));
-      end = off + Math.min(4, tau(r) * 5 + 0.02);
+      p.setTargetAtTime(0, off, Math.min(tau(r), 0.3));
+      end = off + Math.min(1.2, tau(r) * 4 + 0.02);
     } else {
       // Game Boy channels: 16 volume steps, attack/decay/release are frames per step.
       const att = a * FRAME * 15 * 0.25 + 0.003;

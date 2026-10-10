@@ -18,11 +18,8 @@ export const wildPower = (round: number) => Math.min(1, 0.45 + 0.037 * (round - 
 export const WILD_TEMPO = 1.9;
 /** Each area's 5th round ends with an evolved form of one of its basic Pokémon, a few levels above the rest. */
 export const LEADER_LEVELS = 2;
-/**
- * Experience is split like the old Exp. All: a lone starter gets all of it, a bigger team shares it, and nobody gets
- * less than EXP_FLOOR (so a full team doesn't stall).
- */
-export const EXP_FLOOR = 0.3;
+/** Like the modern Exp. Share: the Pokémon that battled gets full experience, the rest of the party this much. */
+export const EXP_SHARE_BENCH = 0.5;
 /**
  * The trainer isn't a Pokémon: a hit takes the fraction of HP it would take from a sturdy (base 80) Pokémon of the
  * attacker's level, scaled by this. Keeps the trainer's 100 HP meaningful at Lv5 and Lv70 alike.
@@ -116,8 +113,8 @@ export function catchChance(sp: Species, hp: number, maxHp: number, ball: number
 // ───────────── experience ─────────────
 
 /** Gen 5 scaled experience: beating something above your level pays more, farming weaklings pays little. */
-export function expGain(defeated: Fighter, receiverLevel: number, teamSize: number) {
+export function expGain(defeated: Fighter, receiverLevel: number, share = 1) {
   const L = defeated.level;
   const scale = ((2 * L + 10) / (L + receiverLevel + 10)) ** 2.5;
-  return Math.floor(((defeated.sp.expYield * L) / 5) * scale * Math.max(EXP_FLOOR, 1 / Math.max(1, teamSize))) + 1;
+  return Math.floor(((defeated.sp.expYield * L) / 5) * scale * share) + 1;
 }
