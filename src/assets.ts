@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { decompressFrames, parseGIF } from 'gifuct-js';
 
 // Populated by `npm run assets` (runs automatically before dev/build).
 const BASE = `${import.meta.env.BASE_URL}assets`;
@@ -6,6 +7,8 @@ const BASE = `${import.meta.env.BASE_URL}assets`;
 export const url = {
   front: (dex: number, shiny = false) => `${BASE}/sprites/front/${shiny ? 'shiny/' : ''}${dex}.png`,
   back: (dex: number, shiny = false) => `${BASE}/sprites/back/${shiny ? 'shiny/' : ''}${dex}.png`,
+  anim: (dex: number, back: boolean, shiny = false) => `${BASE}/sprites/anim/${back ? 'back' : 'front'}/${shiny ? 'shiny/' : ''}${dex}.gif`,
+  trainer: (name: string) => `${BASE}/trainer/${name}.png`,
   fx: (name: string) => `${BASE}/fx/${name}.png`,
   item: (name: string) => `${BASE}/items/${name}.png`,
   cry: (id: string) => `${BASE}/cries/${id}.mp3`,
@@ -17,8 +20,8 @@ export interface SpriteTex {
   tex: THREE.Texture;
   w: number;
   h: number;
-  icon: string; // cropped image as a data URL, for DOM cards
   canvas: HTMLCanvasElement;
+  icon?: string; // cropped image as a data URL for DOM cards, built on first use
   white?: THREE.Texture;
 }
 
@@ -39,7 +42,7 @@ function placeholder(): SpriteTex {
   ctx.font = 'bold 20px sans-serif';
   ctx.textAlign = 'center';
   ctx.fillText('?', 16, 23);
-  return (fallback = { tex: new THREE.CanvasTexture(c), w: 32, h: 32, icon: c.toDataURL(), canvas: c });
+  return (fallback = { tex: new THREE.CanvasTexture(c), w: 32, h: 32, canvas: c });
 }
 
 function trim(img: HTMLImageElement, pixelArt: boolean): SpriteTex {
@@ -71,7 +74,7 @@ function trim(img: HTMLImageElement, pixelArt: boolean): SpriteTex {
   tex.generateMipmaps = false;
   tex.minFilter = THREE.LinearFilter;
   tex.magFilter = pixelArt ? THREE.NearestFilter : THREE.LinearFilter;
-  return { tex, w, h, icon: out.toDataURL(), canvas: out };
+  return { tex, w, h, canvas: out };
 }
 
 async function load(src: string) {
@@ -119,4 +122,116 @@ export function silhouette(src: string): THREE.Texture {
 }
 
 /** Cropped sprite for <img> tags, so small Pokémon don't drown in padding. */
-export const icon = (src: string) => getTex(src).icon;
+export function icon(src: string) {
+  const st = getTex(src);
+  return (st.icon ??= st.canvas.toDataURL());
+}
+
+/** An animated sprite decoded into a grid sheet; frames share one texture and are picked via UV offset. */
+export interface AnimSheet {
+  tex: THREE.Texture;
+  frames: number;
+  cols: number;
+  rows: number;
+  w: number; // cell size in source pixels (union of every frame's opaque area)
+  h: number;
+  ends: number[]; // cumulative frame end times in seconds
+  total: number;
+}
+
+const anims = new Map<string, AnimSheet | null>();
+
+/**
+ * Synchronous lookup that kicks off a background decode on first request. Returns undefined until the
+ * sheet is ready (callers show the static sprite meanwhile) and null if the GIF is unavailable.
+ */
+export function getAnim(src: string): AnimSheet | null | undefined {
+  const a = anims.get(src);
+  if (a !== undefined) return a;
+  if (!decoding.has(src)) {
+    decoding.add(src);
+    void decodeAnim(src).catch(() => null).then((r) => anims.set(src, r));
+  }
+  return undefined;
+}
+const decoding = new Set<string>();
+
+async function decodeAnim(src: string): Promise<AnimSheet | null> {
+  const res = await fetch(src);
+  if (!res.ok) return null;
+  const gif = parseGIF(await res.arrayBuffer());
+  const frames = decompressFrames(gif, true);
+  if (!frames.length) return null;
+  const W = gif.lsd.width, H = gif.lsd.height;
+
+  // Composite each frame onto the logical screen, honouring GIF disposal, to get full images.
+  const screen = document.createElement('canvas');
+  screen.width = W;
+  screen.height = H;
+  const sctx = screen.getContext('2d', { willReadFrequently: true })!;
+  const patch = document.createElement('canvas');
+  const pctx = patch.getContext('2d')!;
+  const full: ImageData[] = [];
+  const delays: number[] = [];
+  for (const f of frames) {
+    const { width, height, left, top } = f.dims;
+    const before = f.disposalType === 3 ? sctx.getImageData(0, 0, W, H) : null;
+    patch.width = width;
+    patch.height = height;
+    pctx.putImageData(new ImageData(new Uint8ClampedArray(f.patch), width, height), 0, 0);
+    sctx.drawImage(patch, left, top);
+    full.push(sctx.getImageData(0, 0, W, H));
+    delays.push(Math.max(20, f.delay || 100) / 1000);
+    if (f.disposalType === 2) sctx.clearRect(left, top, width, height);
+    else if (before) sctx.putImageData(before, 0, 0);
+  }
+
+  // Crop every frame to the union of their opaque pixels so the feet stay planted on the ground.
+  let x0 = W, y0 = H, x1 = -1, y1 = -1;
+  for (const img of full) {
+    const d = img.data;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (d[(y * W + x) * 4 + 3] > 10) {
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
+      }
+    }
+  }
+  if (x1 < 0) return null;
+  const w = x1 - x0 + 1, h = y1 - y0 + 1;
+  const cols = Math.ceil(Math.sqrt(full.length)), rows = Math.ceil(full.length / cols);
+  const sheet = document.createElement('canvas');
+  sheet.width = cols * w;
+  sheet.height = rows * h;
+  const ctx = sheet.getContext('2d')!;
+  full.forEach((img, i) => ctx.putImageData(img, (i % cols) * w - x0, Math.floor(i / cols) * h - y0, x0, y0, w, h));
+
+  const tex = new THREE.CanvasTexture(sheet);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.NearestFilter; // linear would bleed neighbouring frames in at the cell edges
+  tex.magFilter = THREE.NearestFilter;
+  let t = 0;
+  const ends = delays.map((d) => (t += d));
+  return { tex, frames: full.length, cols, rows, w, h, ends, total: t };
+}
+
+/** Per-instance view of a shared sheet (own UV offset, same GPU texture). */
+export function sheetView(a: AnimSheet) {
+  const tex = a.tex.clone();
+  tex.repeat.set(1 / a.cols, 1 / a.rows);
+  return tex;
+}
+
+/** Points `tex` at the frame of `a` that's showing at time `t` (seconds, loops). */
+export function setFrame(tex: THREE.Texture, a: AnimSheet, t: number) {
+  const tt = ((t % a.total) + a.total) % a.total;
+  let i = 0;
+  while (i < a.frames - 1 && a.ends[i] <= tt) i++;
+  const col = i % a.cols, row = Math.floor(i / a.cols);
+  tex.offset.set(col / a.cols, 1 - (row + 1) / a.rows);
+}

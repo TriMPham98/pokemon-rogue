@@ -1,9 +1,9 @@
 import * as THREE from 'three';
-import { type Species, FX_EXTRA, ITEMS, MOVES, MUSIC, SHINY_ODDS, SPECIES, SPECIES_BY_ID, STARTERS, STONE_NAME, TYPE_COLOR, hex, typeMult, type Evo, type Move } from './data';
+import { type Species, FX_ALL, ITEMS, MOVES, MUSIC, SHINY_ODDS, SPECIES, SPECIES_BY_ID, STARTERS, STONE_NAME, TRAINER_SHEET, TYPE_COLOR, hex, typeLabel, typeMultVs, type Evo, type Move, type MoveKind } from './data';
 import { ARENA_R } from './models';
-import { BIOMES, biomeFor, buildArena, disposeArena, type Biome } from './biomes';
+import { BIOMES, areaRound, biomeFor, buildArena, disposeArena, type Biome } from './biomes';
 import { UNLOCKS, finishRun, register, save } from './progress';
-import { Mon, Trainer, weakRingMat, type Unit } from './entities';
+import { ACT_FOLLOW, Mon, Trainer, weakRingMat, type Unit } from './entities';
 import { Effects } from './fx';
 import { audio } from './audio';
 import { icon, preload, url } from './assets';
@@ -73,6 +73,11 @@ const shuffle = <T>(arr: T[]) => arr.map((v) => [Math.random(), v] as const).sor
 const xpNeed = (level: number) => Math.round(level * level * 0.6);
 const EVOLVE_TIME = 2.6;
 const mid = (u: Unit) => u.pos.clone().setY(u.height * 0.5);
+/** Wind-up before each kind of move lands, long enough to read the attacker's animation. */
+const WIND: Record<MoveKind, number> = { melee: 0.18, shot: 0.14, spray: 0.14, drop: 0.3, beam: 0.3, bolt: 0.35, burst: 0.25, quake: 0.38 };
+/** Mew's Metronome draws from every other move. */
+const METRONOME = Object.values(MOVES).filter((m: Move) => m !== MOVES.metronome && m !== MOVES.transform);
+const easeOut = (x: number) => 1 - (1 - x) * (1 - x);
 function weightedPick<T>(items: T[], weight: (t: T) => number) {
   let r = Math.random() * items.reduce((a, t) => a + weight(t), 0);
   for (const t of items) if ((r -= weight(t)) <= 0) return t;
@@ -136,7 +141,7 @@ export class Game {
   private camFocus = new THREE.Vector3();
   private keys = new Set<string>();
 
-  readonly trainer = new Trainer();
+  readonly trainer = new Trainer(TRAINER_SHEET);
   party: Mon[] = [];
   private wilds: Mon[] = [];
   private dying: Mon[] = [];
@@ -175,6 +180,7 @@ export class Game {
   private hitStop = 0;
   private hitStopCd = 0;
   private unlockedAtStart = new Set<string>();
+  private tmpColor = new THREE.Color();
 
   constructor(container: HTMLElement) {
     const r = this.renderer;
@@ -228,7 +234,7 @@ export class Game {
   private async load() {
     const srcs = [
       ...SPECIES.flatMap((s) => [url.front(s.dex), url.back(s.dex), url.front(s.dex, true), url.back(s.dex, true)]),
-      ...[...new Set([...Object.values(MOVES).map((m) => m.fx), ...FX_EXTRA])].map(url.fx),
+      ...FX_ALL.map(url.fx),
       ...ITEMS.map(url.item),
     ];
     this.ui.showModal('Loading…', '', []);
@@ -307,7 +313,7 @@ export class Game {
         return {
           title: sp.name,
           icon: icon(url.front(sp.dex)),
-          tag: `${sp.type} · ${sp.move.name}`,
+          tag: `${typeLabel(sp)} · ${sp.move.name}`,
           tagColor: hex(TYPE_COLOR[sp.type]),
           body: sp.blurb,
           onClick: () => {
@@ -353,7 +359,10 @@ export class Game {
   private endRound() {
     this.state = 'reward';
     this.pokeballs += 2;
-    for (const p of this.party) if (!p.fainted) p.hp = Math.min(p.maxHp, p.hp + p.maxHp * 0.25);
+    for (const p of this.party) {
+      p.act = null;
+      if (!p.fainted) p.hp = Math.min(p.maxHp, p.hp + p.maxHp * 0.25);
+    }
     this.trainer.hp = Math.min(this.trainer.maxHp, this.trainer.hp + 15);
     for (const p of this.projectiles) this.dropSprite(p.sprite);
     this.projectiles = [];
@@ -415,7 +424,7 @@ export class Game {
               return {
                 title: to.name,
                 icon: icon(url.front(to.dex)),
-                tag: `${STONE_NAME[e.stone!]} · ${to.type}`,
+                tag: `${STONE_NAME[e.stone!]} · ${typeLabel(to)}`,
                 tagColor: hex(TYPE_COLOR[to.type]),
                 body: `${to.move.name}`,
                 onClick: evolveInto(e),
@@ -498,6 +507,7 @@ export class Game {
     this.updateTrainer(dt);
     this.updateAim();
     this.updateSpawning(dt);
+    for (const m of [...this.party, ...this.wilds]) if (m.act) this.tickAct(m, dt);
     for (const m of this.party) if (!m.fainted) this.updateParty(m, dt);
     for (const m of this.wilds) if (m.alive) this.updateWild(m, dt);
     this.separate();
@@ -533,10 +543,9 @@ export class Game {
     } else if (t.moving) {
       t.pos.x += (x / len) * TRAINER_SPEED * dt;
       t.pos.z += (z / len) * TRAINER_SPEED * dt;
-      t.walk += dt * 12;
-      this.turn(t.obj, x, z, dt);
-    } else {
-      this.turn(t.obj, this.aim.x - t.pos.x, this.aim.z - t.pos.z, dt, 8);
+      t.face(x, z);
+    } else if (t.throwT <= 0) {
+      t.face(this.aim.x - t.pos.x, this.aim.z - t.pos.z);
     }
     this.clampArena(t.pos);
   }
@@ -606,8 +615,10 @@ export class Game {
   }
 
   private spawnWild(boss: boolean) {
-    const pool = SPECIES.filter((s) => s.minRound <= this.round);
-    const sp = weightedPick(pool, (s) => (this.biome.types.includes(s.type) ? 4 : 1));
+    // Each area has its own encounter table (and Alpha list); evolved forms unlock later in the area.
+    const stage = areaRound(this.round);
+    const table = boss ? this.biome.alphas : this.biome.wild.filter((e) => e.from <= stage);
+    const sp = weightedPick(table, (e) => e.w).sp;
     const level = Math.max(2, Math.round(this.round * 1.4) + Math.floor(Math.random() * 2)) + (boss ? 3 : 0);
     const shiny = Math.random() < SHINY_ODDS;
     const m = new Mon(sp, level, 'wild', boss, shiny);
@@ -643,6 +654,7 @@ export class Game {
     m.cd -= dt;
     m.moving = false;
     if (m.evolveTo) return; // mid-evolution: rooted and untargetable
+    if (this.windingUp(m)) return;
     const tp = this.trainer.pos;
     if (this.focus && !this.valid(this.focus)) this.focus = null;
     if (this.hold) m.target = null;
@@ -667,6 +679,7 @@ export class Game {
     if (m.grow < 1) return;
     m.cd -= dt;
     m.moving = false;
+    if (this.windingUp(m)) return;
     if (m.boss) {
       if (m.slamT > 0) return this.updateSlam(m, dt);
       m.slamCd -= dt;
@@ -708,7 +721,7 @@ export class Game {
     const atk = this.atkOf(m) * 1.8;
     for (const u of [...this.party.filter((p) => p.alive), this.trainer]) {
       if (distXZ(u.pos, m.pos) > SLAM_R + u.radius) continue;
-      const mult = u instanceof Mon ? typeMult(m.sp.move.type, u.sp.type) || 0.5 : 1;
+      const mult = u instanceof Mon ? typeMultVs(m.sp.move.type, u.sp) || 0.5 : 1;
       this.hit(u, Math.round(atk * mult * (u instanceof Trainer ? 0.6 : 0.8)), mult, m.pos, 1.4);
     }
     this.shake = Math.max(this.shake, 0.7);
@@ -791,11 +804,36 @@ export class Game {
     return m.sp.atk * (1 + 0.08 * (m.level - 1)) * side * (m.boss ? 1.3 : 1);
   }
 
+  /** Starts a move: the attacker winds up (see animateMon) and the move lands when the wind-up ends. */
   private attack(m: Mon, t: Unit) {
-    const mv = m.sp.move;
+    let mv = m.sp.move;
+    if (mv === MOVES.transform && t instanceof Mon) mv = t.sp.move; // Ditto copies whoever it fights
+    else if (mv === MOVES.metronome) mv = pick(METRONOME);
     // Slower than a real-time brawler on purpose: every move should be readable.
     m.cd = m.sp.cooldown * (m.side === 'wild' ? 1.5 : 1.15) * rand(0.9, 1.1);
-    const mult = t instanceof Mon ? typeMult(mv.type, t.sp.type) : 1;
+    const dir = new THREE.Vector2(t.pos.x - m.pos.x, t.pos.z - m.pos.z);
+    if (dir.lengthSq() < 1e-6) dir.set(0, 1);
+    m.act = { pose: mv.kind, t: 0, wind: WIND[mv.kind], dir: dir.normalize(), fired: false, color: TYPE_COLOR[mv.type], fire: () => this.useMove(m, t, mv) };
+  }
+
+  private windingUp(m: Mon) {
+    return !!m.act && !m.act.fired;
+  }
+
+  private tickAct(m: Mon, dt: number) {
+    const a = m.act!;
+    if (!m.alive) return void (m.act = null); // caught, fainted or evolving mid-wind-up
+    a.t += dt;
+    if (!a.fired && a.t >= a.wind) {
+      a.fired = true;
+      a.fire();
+    }
+    if (a.t >= a.wind + ACT_FOLLOW) m.act = null;
+  }
+
+  private useMove(m: Mon, t: Unit, mv: Move) {
+    if (!this.valid(t)) return;
+    const mult = t instanceof Mon ? typeMultVs(mv.type, t.sp) : 1;
     let dmg = this.atkOf(m) * rand(0.85, 1) * mult;
     if (t instanceof Trainer) dmg *= 0.7;
     else if (t.side === 'party') dmg *= 0.8;
@@ -803,6 +841,7 @@ export class Game {
     audio.move(mv.type, mv.kind);
 
     const from = mid(m);
+    const fxOpts = mv.tint !== undefined ? { color: mv.tint } : {};
     switch (mv.kind) {
       case 'shot':
       case 'spray': {
@@ -810,34 +849,60 @@ export class Game {
         for (let i = 0; i < n; i++) this.launch(from, t, mv, i * (mv.kind === 'spray' ? 0.07 : 0.15), i === n - 1 ? dmg : 0, mult, i === n - 1);
         break;
       }
-      case 'beam': {
-        const to = mid(t);
-        const segs = Math.max(2, Math.ceil(from.distanceTo(to) / (mv.size * 0.6)));
-        for (let i = 0; i < segs; i++) {
-          const p = from.clone().lerp(to, (i + 0.5) / segs).add(new THREE.Vector3(rand(-0.15, 0.15), rand(-0.15, 0.15), 0));
-          this.fx.spawn(mv.fx, p, { size: mv.size, life: 0.22, rotation: rand(-0.5, 0.5), color: 0xffffaa });
+      case 'drop': {
+        // Rains down from above the target.
+        const n = mv.count ?? 1;
+        for (let i = 0; i < n; i++) {
+          const sky = mid(t).add(new THREE.Vector3(rand(-0.8, 0.8), rand(5, 6.5), rand(-0.8, 0.8)));
+          this.launch(sky, t, mv, i * 0.12, i === n - 1 ? dmg : 0, mult, i === n - 1);
         }
-        this.fx.spawn('electroball', to, { size: mv.size, life: 0.3, grow: 0.6 });
+        break;
+      }
+      case 'beam':
+      case 'bolt': {
+        const to = mid(t);
+        // A bolt comes straight down from the sky; a beam runs from the attacker.
+        const src = mv.kind === 'bolt' ? to.clone().add(new THREE.Vector3(rand(-0.3, 0.3), 7, 0)) : from;
+        const segs = Math.max(2, Math.ceil(src.distanceTo(to) / (mv.size * 0.6)));
+        for (let i = 0; i < segs; i++) {
+          const p = src.clone().lerp(to, (i + 0.5) / segs).add(new THREE.Vector3(rand(-0.15, 0.15), rand(-0.15, 0.15), 0));
+          this.fx.spawn(mv.fx, p, { size: mv.size, life: 0.22, rotation: mv.kind === 'bolt' ? Math.PI / 2 + rand(-0.4, 0.4) : rand(-0.5, 0.5), ...fxOpts, delay: i * 0.012 });
+        }
+        this.fx.spawn(mv.end ?? 'electroball', to, { size: mv.size * (mv.kind === 'bolt' ? 0.9 : 1), life: 0.3, grow: 0.6, ...fxOpts });
+        if (mv.kind === 'bolt') this.shake = Math.max(this.shake, 0.2);
         this.hit(t, dmg, mult, m.pos, 0.2);
         break;
       }
-      case 'melee': {
-        m.lunge = 0.25;
-        m.lungeDir.set(t.pos.x - m.pos.x, t.pos.z - m.pos.z).normalize();
-        this.fx.spawn(mv.fx, mid(t), { size: mv.size, life: 0.3, grow: 0.3, rotation: rand(-0.3, 0.3) });
+      case 'melee':
+        this.fx.spawn(mv.fx, mid(t), { size: mv.size, life: 0.3, grow: 0.3, rotation: rand(-0.3, 0.3), ...fxOpts });
         this.hit(t, dmg, mult, m.pos, 0.45);
         break;
-      }
       case 'burst':
-        this.fx.spawn(mv.fx, mid(t), { size: mv.size * 0.4, life: 0.45, grow: 1.6 });
+        this.fx.spawn(mv.fx, mid(t), { size: mv.size * 0.4, life: 0.45, grow: 1.6, ...fxOpts });
         this.hit(t, dmg, mult, m.pos, 0.2);
         break;
+      case 'quake': {
+        // Shockwave under the target plus debris thrown outward.
+        const ground = t.pos.clone().setY(0.25);
+        this.fx.spawn('impact', ground, { size: mv.size * 1.3, life: 0.35, grow: 0.5, color: mv.tint ?? 0xe0c080 });
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * Math.PI * 2 + rand(-0.3, 0.3);
+          this.fx.spawn(mv.fx, ground, {
+            size: mv.size * 0.3, life: 0.55, spin: 8, gravity: 14, ...fxOpts,
+            vel: new THREE.Vector3(Math.cos(a) * 3.5, rand(4, 6), Math.sin(a) * 3.5),
+          });
+        }
+        this.shake = Math.max(this.shake, 0.15);
+        this.hit(t, dmg, mult, m.pos, 0.5);
+        break;
+      }
     }
   }
 
   private launch(from: THREE.Vector3, target: Unit, mv: Move, delay: number, dmg: number, mult: number, real: boolean) {
     const spray = mv.kind === 'spray';
     const sprite = this.fx.sprite(mv.fx, mv.size * (spray ? rand(0.8, 1.2) : 1));
+    if (mv.tint !== undefined) sprite.material.color.setHex(mv.tint);
     const start = from.clone();
     if (spray) start.add(new THREE.Vector3(rand(-0.2, 0.2), rand(-0.15, 0.15), rand(-0.2, 0.2)));
     sprite.position.copy(start);
@@ -1029,7 +1094,8 @@ export class Game {
       sprite, from, to, homing: this.aimMon, t: 0, dur: 0.3 + dist / 22, arc: 1.2 + dist * 0.12,
       state: 'fly', mon: null, success: false, resolveAt: 0, wobbles: 0,
     });
-    for (const a of this.trainer.arms) a.rotation.x = -2.2;
+    this.trainer.throwT = 0.3;
+    this.trainer.face(to.x - from.x, to.z - from.z);
     audio.throw();
   }
 
@@ -1134,7 +1200,7 @@ export class Game {
         ...this.party.map((p, i) => ({
           title: `Release ${p.sp.name}`,
           icon: icon(url.front(p.sp.dex, p.shiny)),
-          tag: p.sp.type,
+          tag: typeLabel(p.sp),
           tagColor: hex(TYPE_COLOR[p.sp.type]),
           body: `Lv${p.level} · ${p.fainted ? 'Fainted' : `${Math.ceil(p.hp)}/${p.maxHp} HP`}`,
           onClick: () => {
@@ -1174,14 +1240,7 @@ export class Game {
     });
 
     const t = this.trainer;
-    const swing = t.moving ? Math.sin(t.walk) * 0.7 : 0;
-    t.legs[0].rotation.x = swing;
-    t.legs[1].rotation.x = -swing;
-    for (const [i, a] of t.arms.entries()) {
-      const rest = (i ? swing : -swing) * 0.8;
-      a.rotation.x += (rest - a.rotation.x) * Math.min(1, dt * 8);
-    }
-    t.obj.position.y = t.moving ? Math.abs(Math.sin(t.walk)) * 0.06 : 0;
+    t.animate(dt, this.dashT > 0 ? 16 : t.moving && this.state === 'playing' ? 8 : 0);
     t.obj.visible = !(t.inv > 0 && Math.floor(this.time * 20) % 2);
   }
 
@@ -1207,26 +1266,31 @@ export class Game {
       if (m.evolving <= 0) this.finishEvolution(m);
     }
 
+    // The animated sprite plays faster while walking and attacking.
+    m.tickAnim(dt * (m.moving ? 1.6 : 1) * (m.act ? 2 : 1));
+
     // Hop while walking, breathe while idle, hover if it flies.
     const hover = m.sp.float ? 0.45 + 0.12 * Math.sin(m.anim * 3) : 0;
     const hop = m.moving && !m.sp.float ? Math.abs(Math.sin(m.anim * 11)) * 0.2 : 0;
-    const squash = m.moving ? 1 + 0.06 * Math.cos(m.anim * 22) : 1 + 0.025 * Math.sin(m.anim * 3);
-    const lunge = m.lunge > 0 ? Math.sin((1 - m.lunge / 0.25) * Math.PI) * 0.5 : 0;
-    if (m.lunge > 0) m.lunge -= dt;
+    let squash = m.moving ? 1 + 0.06 * Math.cos(m.anim * 22) : 1 + 0.025 * Math.sin(m.anim * 3);
+    const pose = this.pose(m);
+    squash *= pose.squash;
     let sink = 0;
     if (m.dying >= 0) {
       const k = Math.max(0, m.dying / 0.5);
       m.mat.opacity = k;
       sink = (1 - k) * 0.4;
     }
-    m.sprite.position.set(m.lungeDir.x * lunge, hover + hop - sink, m.lungeDir.y * lunge);
-    m.sprite.scale.set((m.viewW * s * (m.flip ? -1 : 1)) / Math.sqrt(squash), m.viewH * s * squash, 1);
+    const dir = m.act?.dir;
+    m.sprite.position.set((dir?.x ?? 0) * pose.fwd + pose.jx, hover + hop - sink + pose.up, (dir?.y ?? 0) * pose.fwd);
+    m.sprite.scale.set((m.viewW * s * pose.grow * (m.flip ? -1 : 1)) / Math.sqrt(squash), m.viewH * s * pose.grow * squash, 1);
     m.sprite.visible = s > 0.01;
     m.shadow.visible = s > 0.05;
 
     // Tint priority: hit flash > red capture beam > normal. (Evolving uses a silhouette texture.)
     if (m.flash > 0) m.mat.color.setScalar(5);
     else if (m.capturing) m.mat.color.setRGB(3, 0.5, 0.5);
+    else if (pose.glow > 0) m.mat.color.setScalar(1).lerp(this.tmpColor.setHex(m.act!.color).multiplyScalar(2.2), pose.glow);
     else m.mat.color.setScalar(1);
 
     const top = m.h * s + hover;
@@ -1250,11 +1314,47 @@ export class Game {
     if (weak) this.hint('weak', 'Weak wild Pokémon get a yellow ring — click one to throw a Poké Ball!');
   }
 
-  private turn(o: THREE.Object3D, dx: number, dz: number, dt: number, rate = 12) {
-    if (Math.abs(dx) + Math.abs(dz) < 1e-4) return;
-    let d = Math.atan2(dx, dz) - o.rotation.y;
-    d = Math.atan2(Math.sin(d), Math.cos(d));
-    o.rotation.y += d * Math.min(1, rate * dt);
+  /**
+   * Attacker body language per move kind: wind-up (p: 0→1), then follow-through (q: 0→1) once the move fires.
+   * fwd is along the attack direction, up is vertical; squash/grow scale the sprite; glow tints it the move's type colour.
+   */
+  private pose(m: Mon) {
+    const out = { fwd: 0, up: 0, jx: 0, squash: 1, grow: 1, glow: 0 };
+    const a = m.act;
+    if (!a || !m.alive) return out;
+    const p = Math.min(1, a.t / a.wind);
+    const q = a.fired ? Math.min(1, (a.t - a.wind) / ACT_FOLLOW) : 0;
+    const arc = Math.sin(q * Math.PI);
+    switch (a.pose) {
+      case 'melee': // rear back, then lunge into the target
+        out.fwd = a.fired ? -0.25 * (1 - q) + arc * 0.65 : -0.25 * easeOut(p);
+        out.squash = a.fired ? 1 + 0.08 * arc : 1 - 0.12 * p;
+        break;
+      case 'shot':
+      case 'spray':
+      case 'drop': // draw back, then thrust forward as the move leaves
+        out.fwd = a.fired ? -0.15 * (1 - q) + arc * 0.22 : -0.15 * p;
+        out.squash = a.fired ? 1 + 0.06 * arc : 1 - 0.08 * p;
+        out.glow = a.fired ? 0 : 0.35 * p;
+        break;
+      case 'beam':
+      case 'bolt': // shudder while charging, kick back on release
+        out.jx = a.fired ? 0 : (Math.random() - 0.5) * 0.1 * p;
+        out.fwd = a.fired ? -0.18 * arc : 0;
+        out.glow = a.fired ? 1 - q : p;
+        out.grow = 1 + 0.06 * (a.fired ? 1 - q : p);
+        break;
+      case 'burst': // levitate and swell with psychic power
+        out.up = a.fired ? 0.35 * (1 - q) : 0.35 * easeOut(p);
+        out.grow = 1 + 0.12 * (a.fired ? 1 - q : p);
+        out.glow = a.fired ? 0.8 * (1 - q) : 0.8 * p;
+        break;
+      case 'quake': // crouch, leap, and slam down as the shockwave hits
+        out.up = a.fired ? 0 : p < 0.2 ? 0 : Math.sin(((p - 0.2) / 0.8) * Math.PI) * 1.1;
+        out.squash = a.fired ? 1 - 0.3 * arc : p < 0.2 ? 1 - 0.25 * (p / 0.2) : 1 + 0.1 * Math.sin(((p - 0.2) / 0.8) * Math.PI);
+        break;
+    }
+    return out;
   }
 
   private clampArena(p: THREE.Vector3) {

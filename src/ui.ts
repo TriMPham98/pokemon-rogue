@@ -46,9 +46,11 @@ export interface Arrow {
 }
 
 const $ = (id: string) => document.getElementById(id)!;
+const setText = (el: HTMLElement, text: string) => void (el.textContent !== text && (el.textContent = text));
+const setHtml = (el: HTMLElement & { _html?: string }, html: string) => void (el._html !== html && (el.innerHTML = el._html = html));
 
 export class UI {
-  private lastParty = '';
+  private cards: { el: HTMLElement; key: '' | 'empty' | 'filled' }[] = [];
   private arrows: HTMLElement[] = [];
   private hintTimer = 0;
 
@@ -95,36 +97,55 @@ export class UI {
     $('help').textContent = `WASD move · Shift dash · Click throw · Right-click focus · F hold fire · Esc pause · M ${s.muted ? 'unmute' : 'mute'}`;
   }
 
+  /**
+   * Party cards are patched in place: rebuilding them with innerHTML every tick made each
+   * <img> re-decode its data-URL icon, so sprites blinked out for a frame mid-fight.
+   */
   setParty(list: PartyEntry[]) {
-    let html = '';
-    for (let i = 0; i < 6; i++) {
+    const box = $('party');
+    while (this.cards.length < 6) {
+      const el = document.createElement('div');
+      box.appendChild(el);
+      this.cards.push({ el, key: '' });
+    }
+    this.cards.forEach((card, i) => {
       const p = list[i];
       if (!p) {
-        html += `<div class="mon-card empty"></div>`;
-        continue;
+        if (card.key !== 'empty') (card.key = 'empty'), (card.el.className = 'mon-card empty'), (card.el.innerHTML = '');
+        return;
       }
-      const pct = Math.max(0, (p.hp / p.maxHp) * 100);
-      const col = pct > 50 ? '#4cd964' : pct > 25 ? '#ffcc00' : '#ff3b30';
-      const cls = [p.fainted && 'fainted', p.hurt && 'hurt', p.evolving && 'evolving'].filter(Boolean).join(' ');
-      html += `
-        <div class="mon-card ${cls}">
-          <div class="mon-icon-wrap">
-            <img class="mon-icon" src="${p.icon}" alt="" />
-            ${p.evoLevel ? `<span class="evo-lv" title="Evolves at Lv${p.evoLevel}">${p.evoLevel}</span>` : ''}
-            ${p.evoStones.length ? `<span class="evo-stones" title="Evolves with a stone">${p.evoStones.map((s) => `<img src="${s}" alt="" />`).join('')}</span>` : ''}
-          </div>
+      if (card.key === 'empty' || card.key === '') {
+        card.el.innerHTML = `
+          <div class="mon-icon-wrap"><img class="mon-icon" alt="" /><span class="badges"></span></div>
           <div class="mon-info">
-            <div class="mon-head"><b>${p.shiny ? '<span class="shiny">✦</span>' : ''}${p.name}</b><span class="lv">Lv${p.level}</span></div>
-            <div class="bar"><div style="width:${pct}%;background:${col}"></div></div>
-            <div class="mon-foot"><span><span class="dot" style="background:${p.color}"></span>${p.fainted ? 'Fainted' : p.move}</span><span>${Math.ceil(p.hp)}/${p.maxHp}</span></div>
-            <div class="xp"><div style="width:${p.xpFrac * 100}%"></div></div>
-          </div>
-        </div>`;
-    }
-    if (html !== this.lastParty) {
-      this.lastParty = html;
-      $('party').innerHTML = html;
-    }
+            <div class="mon-head"><b></b><span class="lv"></span></div>
+            <div class="bar"><div class="hp-fill"></div></div>
+            <div class="mon-foot"><span><span class="dot"></span><span class="move"></span></span><span class="hp-text"></span></div>
+            <div class="xp"><div></div></div>
+          </div>`;
+        card.key = 'filled';
+      }
+      const q = (sel: string) => card.el.querySelector<HTMLElement>(sel)!;
+      const img = q('.mon-icon') as HTMLImageElement;
+      if (img.getAttribute('src') !== p.icon) img.src = p.icon;
+      setHtml(
+        q('.badges'),
+        (p.evoLevel ? `<span class="evo-lv" title="Evolves at Lv${p.evoLevel}">${p.evoLevel}</span>` : '') +
+          (p.evoStones.length ? `<span class="evo-stones" title="Evolves with a stone">${p.evoStones.map((s) => `<img src="${s}" alt="" />`).join('')}</span>` : ''),
+      );
+      setHtml(q('.mon-head b'), `${p.shiny ? '<span class="shiny">✦</span>' : ''}${p.name}`);
+      setText(q('.lv'), `Lv${p.level}`);
+      const pct = Math.max(0, (p.hp / p.maxHp) * 100);
+      const fill = q('.hp-fill');
+      fill.style.width = `${pct}%`;
+      fill.style.background = pct > 50 ? '#4cd964' : pct > 25 ? '#ffcc00' : '#ff3b30';
+      q('.dot').style.background = p.color;
+      setText(q('.move'), p.fainted ? 'Fainted' : p.move);
+      setText(q('.hp-text'), `${Math.ceil(p.hp)}/${p.maxHp}`);
+      q('.xp > div').style.width = `${p.xpFrac * 100}%`;
+      const cls = ['mon-card', p.fainted && 'fainted', p.hurt && 'hurt', p.evolving && 'evolving'].filter(Boolean).join(' ');
+      if (card.el.className !== cls) card.el.className = cls;
+    });
   }
 
   showModal(title: string, subtitle: string, cards: CardSpec[]) {

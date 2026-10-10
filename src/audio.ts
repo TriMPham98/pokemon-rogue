@@ -195,6 +195,11 @@ class AudioEngine {
       case 'ghost': return this.tone(220, 110, 0.4, 'triangle', 0.08);
       case 'rock': return this.noise(0.25, 500, 120, 0.16, 'lowpass');
       case 'flying': return this.noise(0.3, 900, 2200, 0.08);
+      case 'ice': this.noise(0.25, 5000, 8000, 0.06, 'highpass'); return this.tone(2200, 1600, 0.2, 'sine', 0.04);
+      case 'poison': return this.noise(0.3, 400, 900, 0.1, 'bandpass', 0, 6);
+      case 'ground': this.noise(0.4, 300, 60, 0.22, 'lowpass'); return this.tone(70, 45, 0.3, 'square', 0.06);
+      case 'bug': return this.tone(180, 220, 0.2, 'sawtooth', 0.04);
+      case 'dragon': this.tone(140, 90, 0.4, 'sawtooth', 0.06); return this.noise(0.35, 500, 1500, 0.08);
       default: return this.noise(0.08, 1200, 400, 0.12, 'lowpass');
     }
   }
