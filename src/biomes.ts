@@ -278,26 +278,11 @@ function scatter(geo: THREE.BufferGeometry, mat: THREE.Material, n: number, r0: 
 // ───────────── FireRed art in 3D ─────────────
 
 /**
- * Billboard material: each instance turns (about its base, around the X axis) to face the camera's position. A
- * fixed tilt like THREE.Sprite's looks fine near the middle of the screen, but far-off trees are seen at a grazing
- * angle and get squashed into the ground; facing the actual camera keeps every tree standing.
+ * Billboards share the camera's tilt (the camera never rotates), exactly like the THREE.Sprite Pokémon and trainer.
+ * Parallel planes can't cut through each other, so a trainer walking behind a tree is hidden by it instead of
+ * slicing into it.
  */
-function billboardMat(map: THREE.Texture, tint: number) {
-  const m = new THREE.MeshBasicMaterial({ map, alphaTest: 0.5, color: tint });
-  m.onBeforeCompile = (sh) => {
-    sh.vertexShader = sh.vertexShader.replace(
-      '#include <project_vertex>',
-      `vec4 basePos = modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
-      vec3 toCam = normalize(cameraPosition - basePos.xyz);
-      vec3 bbRight = vec3(1.0, 0.0, 0.0); // the camera never yaws
-      vec3 bbUp = normalize(cross(toCam, bbRight));
-      float bbScale = length(instanceMatrix[0].xyz);
-      vec4 mvPosition = viewMatrix * vec4(basePos.xyz + (bbRight * transformed.x + bbUp * transformed.y) * bbScale, 1.0);
-      gl_Position = projectionMatrix * mvPosition;`,
-    );
-  };
-  return m;
-}
+const FACE_CAMERA = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 4, 0, 0));
 const UNIT = 1 / 16; // world units per GBA pixel: a 16 px metatile is one unit
 
 const envTex = (name: EnvName) => getTex(url.env(name));
@@ -375,12 +360,12 @@ function billboards(name: EnvName, spots: { x: number; z: number; s: number }[],
   const st = envTex(name);
   const w = st.w * UNIT, h = st.h * UNIT;
   const geo = new THREE.PlaneGeometry(w, h).translate(0, h / 2, 0);
-  const mat = billboardMat(pixelTex(st.tex), tint);
+  const mat = new THREE.MeshBasicMaterial({ map: pixelTex(st.tex), alphaTest: 0.5, color: tint });
   const im = new THREE.InstancedMesh(geo, mat, spots.length);
   const sh = new THREE.InstancedMesh(new THREE.CircleGeometry(1, 20).rotateX(-Math.PI / 2), shadowMat, spots.length);
   const m = new THREE.Matrix4(), sc = new THREE.Vector3(), p = new THREE.Vector3();
   spots.forEach(({ x, z, s }, i) => {
-    im.setMatrixAt(i, m.compose(p.set(x, 0, z), new THREE.Quaternion(), sc.setScalar(s)));
+    im.setMatrixAt(i, m.compose(p.set(x, 0, z), FACE_CAMERA, sc.setScalar(s)));
     sh.setMatrixAt(i, m.compose(p.set(x, 0.02, z), new THREE.Quaternion(), sc.set(w * s * 0.42, 1, w * s * 0.22)));
   });
   // No cast shadows: from a camera-facing plane they'd be thin slivers. The blobs ground them instead.
@@ -412,6 +397,14 @@ function blob(cx: number, cz: number, r: number): [number, number][] {
   return cells;
 }
 
+/** Ground a prop blocks, as an axis-aligned rectangle (z0 is the far edge). */
+export interface Solid {
+  x0: number;
+  x1: number;
+  z0: number;
+  z1: number;
+}
+
 /** A place wild Pokémon spawn and loiter (a tall-grass patch, or a hollow in a cave). */
 export interface Zone {
   x: number;
@@ -420,8 +413,8 @@ export interface Zone {
 }
 
 /**
- * An arena: static scenery, `userData.zones` (where wild Pokémon live) and `userData.tick(time, dt)` for the ambient
- * animation (particles, waves, lava).
+ * An arena: static scenery, `userData.zones` (where wild Pokémon live), `userData.solids` (props nobody can walk
+ * through) and `userData.tick(time, dt)` for the ambient animation (particles, waves, lava).
  */
 export function buildArena(b: Biome) {
   const g = new THREE.Group();
@@ -475,7 +468,19 @@ export function buildArena(b: Biome) {
 
   // Standing art: props inside the arena, and a dense ring walling it in.
   const tint = art.tint ?? 0xffffff;
-  for (const [name, n, scale = 1] of art.props ?? []) g.add(billboards(name, spotsIn(n, 4, ARENA_R - 2, 1.4, busy, scale), tint));
+  // Props inside the arena are solid, like map tiles in the games: a tree blocks the whole patch of ground its
+  // picture covers on screen (its width, and back as far as it's tall), so nobody ends up standing inside it.
+  const solids: Solid[] = [];
+  for (const [name, n, scale = 1] of art.props ?? []) {
+    const spots = spotsIn(n, 4, ARENA_R - 2, 1.4 + 0.6 * scale, busy, scale);
+    g.add(billboards(name, spots, tint));
+    const st = envTex(name);
+    for (const { x, z, s } of spots) {
+      const hw = Math.max(0.3, st.w * UNIT * s * 0.5), depth = st.h * UNIT * s * 1.25;
+      solids.push({ x0: x - hw, x1: x + hw, z0: z - depth, z1: z + 0.2 });
+    }
+  }
+  g.userData.solids = solids;
   const ring: { x: number; z: number; s: number }[] = [];
   for (const [name, n, scale = 1] of art.ring) {
     const spots = spotsIn(n, ARENA_R + 1.2, ARENA_R + 16, 0.9, ring, scale, 0.25);

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { type Species, EVOLVED, FX_ALL, ITEMS, MOVES, MUSIC, SHINY_ODDS, SPECIES, SPECIES_BY_ID, STARTERS, STONE_NAME, TRAINER_SHEET, STAT_KEYS, STAT_LABEL, TYPE_COLOR, expAt, hex, typeLabel, typeMultVs, type Evo, type Move, type MoveKind, type Status } from './data';
 import { LEADER_LEVELS, BALLS, calcStats, SLOW_TIME, STATUS_DOT, TRAP_TIME, catchChance, damage, WILD_TEMPO, EXP_SHARE_BENCH, expGain, wildLevel, wildPower, type BallKind, type Hit } from './battle';
 import { ARENA_R } from './models';
-import { BIOMES, ROUNDS_PER_AREA, areaRound, biomeFor, buildArena, disposeArena, sunFor, type Biome, type Zone } from './biomes';
+import { BIOMES, ROUNDS_PER_AREA, areaRound, biomeFor, buildArena, disposeArena, sunFor, type Biome, type Solid, type Zone } from './biomes';
 import { UNLOCKS, finishRun, register, save } from './progress';
 import { ACT_FOLLOW, Mon, Trainer, weakRingMat, type Unit } from './entities';
 import { Effects } from './fx';
@@ -911,6 +911,19 @@ export class Game {
         b.p.z += dz * push * (b.w / tw);
       }
     }
+    // Trees, rocks, signs and graves inside the arena are solid: push units out of their footprint.
+    const solids: Solid[] = this.arena?.userData.solids ?? [];
+    for (const u of units) {
+      for (const s of solids) {
+        const r = u.r;
+        if (u.p.x < s.x0 - r || u.p.x > s.x1 + r || u.p.z < s.z0 - r || u.p.z > s.z1 + r) continue;
+        // Leave through the nearest side.
+        const out = [s.x0 - r - u.p.x, s.x1 + r - u.p.x, s.z0 - r - u.p.z, s.z1 + r - u.p.z];
+        const i = out.reduce((b, v, k) => (Math.abs(v) < Math.abs(out[b]) ? k : b), 0);
+        if (i < 2) u.p.x += out[i];
+        else u.p.z += out[i];
+      }
+    }
   }
 
   // ───────────────────────────── combat ─────────────────────────────
@@ -1103,8 +1116,8 @@ export class Game {
     m.statusTick -= dt;
     if (m.statusTick <= 0) {
       m.statusTick = 1;
-      if (m.side === 'party') m.hurtT = 0.2;
-      else m.flash = 0.05;
+      // Wild ones blink; your own card shows the status chip instead of flashing red every second.
+      if (m.side === 'wild') m.flash = 0.05;
     }
   }
 

@@ -1,5 +1,5 @@
 :root {
-  --glass: rgba(14, 18, 32, 0.78);
+  --glass: rgba(14, 18, 32, 0.86);
   --glass-strong: rgba(14, 18, 32, 0.92);
   --line: rgba(255, 255, 255, 0.1);
   --text: #f4f6fb;
@@ -22,9 +22,10 @@ body {
 #app canvas { display: block; cursor: crosshair; }
 #ui { position: fixed; inset: 0; pointer-events: none; }
 
+/* No backdrop-filter on the live HUD: these elements re-render many times a second, and Chrome can drop a whole
+   blurred layer for a frame while repainting, which made the HUD flicker blank (e.g. under a poison tick). */
 .panel-glass, .chip, .mon-card, .toast, .target {
   background: var(--glass); border: 1px solid var(--line); box-shadow: var(--shadow);
-  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
 }
 
 /* ───────── HUD (top left) ───────── */
