@@ -1,30 +1,47 @@
 import * as THREE from 'three';
-import { SPECIES, SPECIES_BY_ID, STARTERS, TYPE_COLOR, hex, typeMult, type PType } from './data';
-import { ARENA_R, GEO, buildArena, buildPokeball, shared } from './models';
+import { FX_EXTRA, ITEMS, MOVES, MUSIC, SPECIES, SPECIES_BY_ID, STARTERS, TYPE_COLOR, hex, typeMult, type Move } from './data';
+import { ARENA_R, buildArena } from './models';
 import { Mon, Trainer, weakRingMat, type Unit } from './entities';
-import { UI } from './ui';
+import { Effects } from './fx';
+import { audio } from './audio';
+import { icon, preload, url } from './assets';
+import { UI, type Arrow } from './ui';
 
-type State = 'starter' | 'playing' | 'reward' | 'swap' | 'gameover';
+type State = 'loading' | 'starter' | 'playing' | 'paused' | 'reward' | 'swap' | 'gameover';
 
-interface Projectile { mesh: THREE.Mesh; target: Unit; dmg: number; mult: number }
-interface Ball {
-  obj: THREE.Group;
-  from: THREE.Vector3;
-  to: THREE.Vector3;
+interface Projectile {
+  sprite: THREE.Sprite;
+  start: THREE.Vector3;
+  target: Unit;
   t: number;
   dur: number;
   arc: number;
-  state: 'fly' | 'wobble' | 'miss';
+  spin: number;
+  dmg: number;
+  mult: number;
+  real: boolean; // the last sprite of a volley carries the damage; the rest are visual
+}
+
+interface Ball {
+  sprite: THREE.Sprite;
+  from: THREE.Vector3;
+  to: THREE.Vector3;
+  homing: Mon | null;
+  t: number;
+  dur: number;
+  arc: number;
+  state: 'fly' | 'wobble' | 'miss' | 'done';
   mon: Mon | null;
   success: boolean;
   resolveAt: number;
+  wobbles: number;
 }
-interface Floater { el: HTMLElement; pos: THREE.Vector3; t: number }
-interface Particle { mesh: THREE.Mesh; vel: THREE.Vector3; t: number; life: number; size: number }
+
+interface Floater { el: HTMLElement; pos: THREE.Vector3; t: number; total?: number }
 
 interface Reward {
   title: string;
-  icon: string;
+  item: string;
   desc: string;
   cond?: (g: Game) => boolean;
   apply: (g: Game) => void;
@@ -33,9 +50,12 @@ interface Reward {
 const PARTY_MAX = 6;
 const THROW_RANGE = 14;
 const TRAINER_SPEED = 7;
-const CAM_OFFSET = new THREE.Vector3(0, 15, 11);
+const CAM_OFFSET = new THREE.Vector3(0, 12, 12);
+// Look a bit south of the trainer so the party panel doesn't hide what's coming from below.
+const CAM_LEAD = new THREE.Vector3(0, 0.5, 1.5);
 const SUN_OFFSET = new THREE.Vector3(12, 22, 8);
-const FLOATER_LIFE = 0.9;
+const FLOATER_LIFE = 0.8;
+const WEAK = 0.35;
 
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 const pick = <T>(arr: T[]) => arr[Math.floor(Math.random() * arr.length)];
@@ -44,50 +64,44 @@ const distXZ = (a: THREE.Vector3, b: THREE.Vector3) => Math.hypot(a.x - b.x, a.z
 const easeOutBack = (x: number) => 1 + 2.7 * Math.pow(x - 1, 3) + 1.7 * Math.pow(x - 1, 2);
 const shuffle = <T>(arr: T[]) => arr.map((v) => [Math.random(), v] as const).sort((a, b) => a[0] - b[0]).map((p) => p[1]);
 const xpNeed = (level: number) => level * level;
-
-const matCache = new Map<number, THREE.MeshBasicMaterial>();
-const glowMat = (color: number) => {
-  let m = matCache.get(color);
-  if (!m) matCache.set(color, (m = shared(new THREE.MeshBasicMaterial({ color }))));
-  return m;
-};
+const mid = (u: Unit) => u.pos.clone().setY(u.height * 0.5);
 
 const REWARDS: Reward[] = [
   {
-    title: 'Hyper Potion Mist', icon: '🧪', desc: 'Fully heal every conscious Pokémon and the trainer.',
+    title: 'Hyper Potion', item: 'hyper-potion', desc: 'Fully heal every conscious Pokémon and the trainer.',
     apply: (g) => {
       for (const p of g.party) if (!p.fainted) p.hp = p.maxHp;
       g.trainer.hp = g.trainer.maxHp;
     },
   },
   {
-    title: 'Max Revive', icon: '💎', desc: 'Revive all fainted Pokémon at 60% HP.',
+    title: 'Max Revive', item: 'max-revive', desc: 'Revive all fainted Pokémon at 60% HP.',
     cond: (g) => g.party.some((p) => p.fainted),
     apply: (g) => {
       for (const p of g.party) if (p.fainted) g.revive(p, 0.6);
     },
   },
   {
-    title: 'Rare Candy Bag', icon: '🍬', desc: '+1 level to every Pokémon in your party.',
+    title: 'Rare Candy', item: 'rare-candy', desc: '+1 level to every Pokémon in your party.',
     apply: (g) => g.party.forEach((p) => g.levelUp(p)),
   },
   {
-    title: 'Poké Ball Crate', icon: '📦', desc: '+5 Poké Balls.',
+    title: 'Poké Ball ×5', item: 'poke-ball', desc: 'Five more Poké Balls.',
     apply: (g) => (g.pokeballs += 5),
   },
   {
-    title: 'X Attack', icon: '⚔️', desc: 'Your party deals +15% damage for the rest of the run.',
+    title: 'X Attack', item: 'x-attack', desc: 'Your party deals +15% damage for the rest of the run.',
     apply: (g) => (g.partyAtkMul += 0.15),
   },
   {
-    title: 'Trainer Vest', icon: '🦺', desc: '+30 max trainer HP and fully heal the trainer.',
+    title: 'Focus Band', item: 'focus-band', desc: '+30 max trainer HP and fully heal the trainer.',
     apply: (g) => {
       g.trainer.maxHp += 30;
       g.trainer.hp = g.trainer.maxHp;
     },
   },
   {
-    title: 'Great Ball Upgrade', icon: '🔵', desc: '+12% catch chance on every throw for the rest of the run.',
+    title: 'Great Ball Upgrade', item: 'great-ball', desc: '+12% catch chance on every throw for the rest of the run.',
     apply: (g) => (g.catchBonus += 0.12),
   },
 ];
@@ -95,15 +109,17 @@ const REWARDS: Reward[] = [
 export class Game {
   private renderer = new THREE.WebGLRenderer({ antialias: true });
   private scene = new THREE.Scene();
-  private camera = new THREE.PerspectiveCamera(50, 1, 0.1, 200);
+  private camera = new THREE.PerspectiveCamera(45, 1, 0.1, 200);
   private clock = new THREE.Clock();
   private sun = new THREE.DirectionalLight(0xffffff, 2.2);
   private ui = new UI();
+  private fx = new Effects(this.scene);
   private reticle: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
   private raycaster = new THREE.Raycaster();
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private mouse = new THREE.Vector2();
   private aim = new THREE.Vector3();
+  private aimMon: Mon | null = null;
   private camFocus = new THREE.Vector3();
   private keys = new Set<string>();
 
@@ -114,13 +130,14 @@ export class Game {
   private projectiles: Projectile[] = [];
   private balls: Ball[] = [];
   private floaters: Floater[] = [];
-  private particles: Particle[] = [];
+  private dmgFloaters = new Map<Mon, Floater>();
 
-  private state: State = 'starter';
+  private state: State = 'loading';
   private round = 0;
   private toSpawn = 0;
   private spawnTimer = 0;
   private bossPending = false;
+  private criedThisRound = new Set<string>();
   pokeballs = 5;
   partyAtkMul = 1;
   catchBonus = 0;
@@ -130,6 +147,7 @@ export class Game {
   private throwCd = 0;
   private uiTimer = 0;
   private time = 0;
+  private seenHints: Set<string>;
 
   constructor(container: HTMLElement) {
     const r = this.renderer;
@@ -139,7 +157,7 @@ export class Game {
     container.appendChild(r.domElement);
 
     this.scene.background = new THREE.Color(0xa8dcff);
-    this.scene.fog = new THREE.Fog(0xa8dcff, 30, 65);
+    this.scene.fog = new THREE.Fog(0xa8dcff, 30, 60);
     this.scene.add(new THREE.HemisphereLight(0xdff2ff, 0x4f7a3a, 1.6));
     const s = this.sun;
     s.castShadow = true;
@@ -158,26 +176,58 @@ export class Game {
     this.reticle.visible = false;
     this.scene.add(this.reticle);
 
+    try {
+      this.seenHints = new Set(JSON.parse(localStorage.getItem('pr-hints') ?? '[]'));
+    } catch {
+      this.seenHints = new Set();
+    }
+
     this.bindInput();
     this.resize();
-    this.showStarter();
     this.loop();
+    void this.load();
   }
 
   // ───────────────────────────── setup / input ─────────────────────────────
+
+  private async load() {
+    const srcs = [
+      ...SPECIES.flatMap((s) => [url.front(s.dex), url.back(s.dex)]),
+      ...[...new Set([...Object.values(MOVES).map((m) => m.fx), ...FX_EXTRA])].map(url.fx),
+      ...ITEMS.map(url.item),
+    ];
+    this.ui.showModal('Loading…', '', []);
+    const missing = await preload(srcs, (done, total) => {
+      const p = document.querySelector('#modal p');
+      if (p) p.textContent = `${done} / ${total} sprites`;
+    });
+    if (!missing) return this.showStarter();
+    this.ui.showModal(
+      'Some assets are missing',
+      `${missing} sprites failed to load. Run <code>npm run assets</code> and reload. You can still play with placeholders.`,
+      [{ title: 'Continue anyway', onClick: () => this.showStarter() }],
+    );
+  }
 
   private bindInput() {
     window.addEventListener('resize', () => this.resize());
     window.addEventListener('keydown', (e) => {
       const k = e.key.toLowerCase();
       this.keys.add(k);
+      audio.unlock();
       if (k === ' ') e.preventDefault();
       if (e.repeat) return;
       if (k === ' ') this.throwBall();
       if (k === 'f') this.toggleHold();
+      if (k === 'm') audio.toggleMute();
+      if (k === 'escape' || k === 'p') this.togglePause();
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.key.toLowerCase()));
-    window.addEventListener('blur', () => this.keys.clear());
+    window.addEventListener('blur', () => {
+      this.keys.clear();
+      if (this.state === 'playing') this.togglePause();
+    });
+    window.addEventListener('pointerdown', () => audio.unlock());
     const el = this.renderer.domElement;
     el.addEventListener('pointermove', (e) => this.mouse.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1));
     el.addEventListener('pointerdown', (e) => {
@@ -191,6 +241,15 @@ export class Game {
     this.camera.updateProjectionMatrix();
   }
 
+  private hint(key: string, text: string) {
+    if (this.seenHints.has(key)) return;
+    this.seenHints.add(key);
+    try {
+      localStorage.setItem('pr-hints', JSON.stringify([...this.seenHints]));
+    } catch {}
+    this.ui.hint(text);
+  }
+
   // ───────────────────────────── flow ─────────────────────────────
 
   private showStarter() {
@@ -202,10 +261,12 @@ export class Game {
         const sp = SPECIES_BY_ID[id];
         return {
           title: sp.name,
-          tag: sp.type,
+          icon: icon(url.front(sp.dex)),
+          tag: `${sp.type} · ${sp.move.name}`,
           tagColor: hex(TYPE_COLOR[sp.type]),
           body: sp.blurb,
           onClick: () => {
+            audio.unlock();
             const m = new Mon(sp, 6, 'party');
             m.pos.set(1.5, 0, 1.5);
             this.addToParty(m);
@@ -222,8 +283,12 @@ export class Game {
     this.round = n;
     this.toSpawn = Math.min(26, 2 + n * 2);
     this.bossPending = n % 5 === 0;
-    this.spawnTimer = 1.2;
+    this.spawnTimer = 1.5;
+    this.criedThisRound.clear();
     this.ui.banner(`Round ${n}`, this.bossPending ? 'An Alpha lurks nearby…' : 'Wild Pokémon incoming!');
+    audio.roundStart();
+    audio.playMusic(this.bossPending ? MUSIC.boss : MUSIC.battle);
+    if (n === 1) this.hint('move', 'Move with WASD — your Pokémon follow you and battle on their own.');
   }
 
   private endRound() {
@@ -231,8 +296,9 @@ export class Game {
     this.pokeballs += 2;
     for (const p of this.party) if (!p.fainted) p.hp = Math.min(p.maxHp, p.hp + p.maxHp * 0.25);
     this.trainer.hp = Math.min(this.trainer.maxHp, this.trainer.hp + 15);
-    for (const p of this.projectiles) p.mesh.removeFromParent();
+    for (const p of this.projectiles) this.dropSprite(p.sprite);
     this.projectiles = [];
+    this.reticle.visible = false;
 
     const options = shuffle(REWARDS.filter((r) => !r.cond || r.cond(this))).slice(0, 3);
     this.ui.showModal(
@@ -240,9 +306,10 @@ export class Game {
       '+2 Poké Balls and your team recovered 25% HP. Pick a reward:',
       options.map((o) => ({
         title: o.title,
-        icon: o.icon,
+        icon: icon(url.item(o.item)),
         body: o.desc,
         onClick: () => {
+          audio.ui();
           o.apply(this);
           this.ui.hideModal();
           this.state = 'playing';
@@ -256,18 +323,35 @@ export class Game {
     if (this.state === 'gameover') return;
     this.state = 'gameover';
     this.reticle.visible = false;
+    audio.stopMusic();
+    audio.faint();
     this.ui.showModal(
       'Run over',
       `${reason}<br/>You reached <b>round ${this.round}</b>, defeated <b>${this.defeated}</b> and caught <b>${this.caught}</b> Pokémon.`,
-      [{ title: 'Play again', icon: '🔁', body: 'Start a new run', onClick: () => location.reload() }],
+      [{ title: 'Play again', icon: icon(url.item('poke-ball')), body: 'Start a new run', onClick: () => location.reload() }],
     );
+  }
+
+  private togglePause() {
+    if (this.state === 'paused') {
+      this.ui.hideModal();
+      this.state = 'playing';
+      return;
+    }
+    if (this.state !== 'playing') return;
+    this.state = 'paused';
+    this.keys.clear();
+    this.ui.showModal('Paused', 'Esc or P to resume · M toggles sound', [
+      { title: 'Resume', icon: icon(url.item('poke-ball')), onClick: () => this.togglePause() },
+      { title: 'Restart run', ghost: true, onClick: () => location.reload() },
+    ]);
   }
 
   private toggleHold() {
     if (this.state !== 'playing') return;
     this.hold = !this.hold;
     for (const p of this.party) p.target = null;
-    this.ui.toast(this.hold ? 'Holding fire — line up a catch!' : 'Party attacking!', 'info');
+    audio.ui();
   }
 
   // ───────────────────────────── main loop ─────────────────────────────
@@ -275,12 +359,17 @@ export class Game {
   private loop = () => {
     requestAnimationFrame(this.loop);
     const dt = Math.min(this.clock.getDelta(), 1 / 20);
-    this.time += dt;
+    const active = this.state !== 'paused';
+    if (active) this.time += dt;
     if (this.state === 'playing') this.update(dt);
-    this.animate(dt);
+    if (active) {
+      this.animate(dt);
+      this.fx.update(dt);
+    }
     this.updateCamera(dt);
     this.renderer.render(this.scene, this.camera);
-    this.updateFloaters(dt);
+    this.updateFloaters(active ? dt : 0);
+    this.ui.setArrows(this.state === 'playing' ? this.arrows() : []);
     this.uiTimer -= dt;
     if (this.uiTimer <= 0) {
       this.uiTimer = 0.1;
@@ -321,25 +410,33 @@ export class Game {
       t.pos.x += (x / len) * TRAINER_SPEED * dt;
       t.pos.z += (z / len) * TRAINER_SPEED * dt;
       t.walk += dt * 12;
-      this.face(t.obj, x, z, dt);
+      this.turn(t.obj, x, z, dt);
     } else {
-      this.face(t.obj, this.aim.x - t.pos.x, this.aim.z - t.pos.z, dt, 8);
+      this.turn(t.obj, this.aim.x - t.pos.x, this.aim.z - t.pos.z, dt, 8);
     }
     this.clampArena(t.pos);
   }
 
   private updateAim() {
     this.raycaster.setFromCamera(this.mouse, this.camera);
-    if (!this.raycaster.ray.intersectPlane(this.groundPlane, this.aim)) return;
+    const targets = this.wilds.filter((w) => w.alive);
+    // Prefer the sprite under the cursor: clicking a Pokémon's body should target it.
+    const hit = this.raycaster.intersectObjects(targets.map((w) => w.sprite), false)[0];
+    this.aimMon = hit ? targets.find((w) => w.sprite === hit.object) ?? null : null;
+    if (this.aimMon) this.aim.copy(this.aimMon.pos);
+    else if (!this.raycaster.ray.intersectPlane(this.groundPlane, this.aim)) return;
     const tp = this.trainer.pos;
     const d = distXZ(this.aim, tp);
-    if (d > THROW_RANGE) this.aim.sub(tp).multiplyScalar(THROW_RANGE / d).add(tp);
+    if (d > THROW_RANGE) {
+      this.aim.sub(tp).multiplyScalar(THROW_RANGE / d).add(tp);
+      this.aimMon = null;
+    }
     this.aim.y = 0;
-    const over = this.wilds.some((w) => w.alive && distXZ(w.pos, this.aim) < w.radius + 0.4);
+    this.aimMon ??= targets.find((w) => distXZ(w.pos, this.aim) < w.radius + 0.4) ?? null;
     this.reticle.visible = true;
     this.reticle.position.set(this.aim.x, 0.06, this.aim.z);
-    this.reticle.material.color.setHex(over ? 0xffd23f : 0xffffff);
-    this.reticle.scale.setScalar(over ? 1.4 : 1);
+    this.reticle.material.color.setHex(this.aimMon ? 0xffd23f : 0xffffff);
+    this.reticle.scale.setScalar(this.aimMon ? Math.max(1.4, this.aimMon.radius * 2.5) : 1);
   }
 
   // ───────────────────────────── spawning ─────────────────────────────
@@ -347,16 +444,18 @@ export class Game {
   private updateSpawning(dt: number) {
     if (this.toSpawn > 0) {
       this.spawnTimer -= dt;
-      const cap = 5 + Math.floor(this.round / 2);
+      const cap = 3 + Math.floor(this.round / 3);
       if (this.spawnTimer <= 0 && this.wilds.length < cap) {
         this.spawnWild(false);
         this.toSpawn--;
-        this.spawnTimer = Math.max(0.7, 2 - this.round * 0.08);
+        this.spawnTimer = Math.max(1, 2.4 - this.round * 0.07);
       }
     } else if (this.bossPending && this.wilds.length <= 1) {
       this.bossPending = false;
       const b = this.spawnWild(true);
       this.ui.toast(`An ALPHA ${b.sp.name} appeared!`, 'warn');
+      audio.alpha();
+      void audio.cry(b.sp.id, 0.7, 0.8);
     }
   }
 
@@ -374,10 +473,14 @@ export class Game {
       if (Math.hypot(x - tp.x, z - tp.z) > 11) break;
     }
     m.pos.set(x, 0, z);
-    m.yaw.rotation.y = Math.atan2(tp.x - x, tp.z - z);
+    m.face(tp.x - x, tp.z - z);
     this.scene.add(m.obj);
     this.wilds.push(m);
-    this.burst(m.pos, 0xffffff, 8);
+    this.fx.spawn('shine', m.pos.clone().setY(0.6), { size: 1.2, life: 0.4, grow: 0.8 });
+    if (!boss && !this.criedThisRound.has(sp.id)) {
+      this.criedThisRound.add(sp.id);
+      void audio.cry(sp.id, 0.3);
+    }
     return m;
   }
 
@@ -400,7 +503,7 @@ export class Game {
     else {
       m.hp = Math.min(m.maxHp, m.hp + m.maxHp * 0.03 * dt); // catch breath out of combat
       const a = (this.party.indexOf(m) / PARTY_MAX) * Math.PI * 2 + 0.6;
-      this.moveTo(m, tp.x + Math.cos(a) * 2.3, tp.z + Math.sin(a) * 2.3, m.sp.speed * 1.3, dt, 0.2);
+      this.moveTo(m, tp.x + Math.cos(a) * 2.4, tp.z + Math.sin(a) * 2.4, m.sp.speed * 1.3, dt, 0.25);
     }
   }
 
@@ -421,7 +524,7 @@ export class Game {
     const d = Math.hypot(dx, dz);
     const reach = m.sp.range + m.radius + t.radius;
     if (d > reach * 0.9) this.moveTo(m, t.pos.x, t.pos.z, speed, dt, reach * 0.85);
-    else this.face(m.yaw, dx, dz, dt);
+    else m.face(dx, dz);
     if (d <= reach && m.cd <= 0) this.attack(m, t);
   }
 
@@ -433,7 +536,7 @@ export class Game {
     m.pos.x += (dx / d) * step;
     m.pos.z += (dz / d) * step;
     m.moving = true;
-    this.face(m.yaw, dx, dz, dt);
+    m.face(dx, dz);
     this.clampArena(m.pos);
   }
 
@@ -478,38 +581,84 @@ export class Game {
   }
 
   private attack(m: Mon, t: Unit) {
-    m.cd = m.sp.cooldown * (m.side === 'wild' ? 1.35 : 1) * rand(0.9, 1.1);
-    const mult = t instanceof Mon ? typeMult(m.sp.type, t.sp.type) : 1;
+    const mv = m.sp.move;
+    // Slower than a real-time brawler on purpose: every move should be readable.
+    m.cd = m.sp.cooldown * (m.side === 'wild' ? 1.5 : 1.15) * rand(0.9, 1.1);
+    const mult = t instanceof Mon ? typeMult(mv.type, t.sp.type) : 1;
     let dmg = this.atkOf(m) * rand(0.85, 1) * mult;
     if (t instanceof Trainer) dmg *= 0.7;
     else if (t.side === 'party') dmg *= 0.8;
     dmg = mult === 0 ? 0 : Math.max(1, Math.round(dmg));
-    if (m.sp.range > 2.5) {
-      const mesh = new THREE.Mesh(GEO.sphere, glowMat(TYPE_COLOR[m.sp.type]));
-      mesh.scale.setScalar(m.boss ? 0.3 : 0.18);
-      mesh.position.set(m.pos.x, m.height * 0.6, m.pos.z);
-      this.scene.add(mesh);
-      this.projectiles.push({ mesh, target: t, dmg, mult });
-    } else {
-      m.lunge = 0.25;
-      this.hit(t, dmg, mult);
+    audio.move(mv.type, mv.kind);
+
+    const from = mid(m);
+    switch (mv.kind) {
+      case 'shot':
+      case 'spray': {
+        const n = mv.count ?? 1;
+        for (let i = 0; i < n; i++) this.launch(from, t, mv, i * (mv.kind === 'spray' ? 0.07 : 0.15), i === n - 1 ? dmg : 0, mult, i === n - 1);
+        break;
+      }
+      case 'beam': {
+        const to = mid(t);
+        const segs = Math.max(2, Math.ceil(from.distanceTo(to) / (mv.size * 0.6)));
+        for (let i = 0; i < segs; i++) {
+          const p = from.clone().lerp(to, (i + 0.5) / segs).add(new THREE.Vector3(rand(-0.15, 0.15), rand(-0.15, 0.15), 0));
+          this.fx.spawn(mv.fx, p, { size: mv.size, life: 0.22, rotation: rand(-0.5, 0.5), color: 0xffffaa });
+        }
+        this.fx.spawn('electroball', to, { size: mv.size, life: 0.3, grow: 0.6 });
+        this.hit(t, dmg, mult);
+        break;
+      }
+      case 'melee': {
+        m.lunge = 0.25;
+        m.lungeDir.set(t.pos.x - m.pos.x, t.pos.z - m.pos.z).normalize();
+        this.fx.spawn(mv.fx, mid(t), { size: mv.size, life: 0.3, grow: 0.3, rotation: rand(-0.3, 0.3) });
+        this.hit(t, dmg, mult);
+        break;
+      }
+      case 'burst':
+        this.fx.spawn(mv.fx, mid(t), { size: mv.size * 0.4, life: 0.45, grow: 1.6 });
+        this.hit(t, dmg, mult);
+        break;
     }
+  }
+
+  private launch(from: THREE.Vector3, target: Unit, mv: Move, delay: number, dmg: number, mult: number, real: boolean) {
+    const spray = mv.kind === 'spray';
+    const sprite = this.fx.sprite(mv.fx, mv.size * (spray ? rand(0.8, 1.2) : 1));
+    const start = from.clone();
+    if (spray) start.add(new THREE.Vector3(rand(-0.2, 0.2), rand(-0.15, 0.15), rand(-0.2, 0.2)));
+    sprite.position.copy(start);
+    sprite.visible = false;
+    this.scene.add(sprite);
+    const dur = Math.max(0.12, start.distanceTo(mid(target)) / (spray ? 13 : 10));
+    this.projectiles.push({ sprite, start, target, t: -delay, dur, arc: mv.arc ?? 0, spin: mv.spin ? rand(8, 14) : 0, dmg, mult, real });
   }
 
   private updateProjectiles(dt: number) {
     this.projectiles = this.projectiles.filter((p) => {
-      if (!this.valid(p.target)) return void p.mesh.removeFromParent(), false;
-      const to = p.target.pos.clone().setY(p.target.height * 0.5);
-      const d = p.mesh.position.distanceTo(to);
-      const step = 14 * dt;
-      if (d <= step + 0.3) {
+      p.t += dt;
+      if (p.t < 0) return true;
+      if (!this.valid(p.target)) return this.dropSprite(p.sprite), false;
+      p.sprite.visible = true;
+      const f = Math.min(1, p.t / p.dur);
+      p.sprite.position.lerpVectors(p.start, mid(p.target), f);
+      p.sprite.position.y += Math.sin(Math.PI * f) * p.arc;
+      p.sprite.material.rotation += p.spin * dt;
+      if (f < 1) return true;
+      if (p.real) {
+        this.fx.spawn('impact', p.sprite.position, { size: 0.6, life: 0.15, grow: 0.4 });
         this.hit(p.target, p.dmg, p.mult);
-        p.mesh.removeFromParent();
-        return false;
       }
-      p.mesh.position.add(to.sub(p.mesh.position).multiplyScalar(step / d));
-      return true;
+      this.dropSprite(p.sprite);
+      return false;
     });
+  }
+
+  private dropSprite(s: THREE.Sprite) {
+    s.removeFromParent();
+    s.material.dispose();
   }
 
   private hit(t: Unit, dmg: number, mult: number) {
@@ -518,7 +667,9 @@ export class Game {
       t.hp -= dmg;
       t.inv = 0.35;
       this.ui.hurt();
+      audio.hurt();
       this.floater(t.pos, 2.1, `-${dmg}`, '#ff5a5a');
+      this.hint('hurt', 'Wild Pokémon go for you too — keep your team between you and them.');
       if (t.hp <= 0) {
         t.hp = 0;
         this.gameOver('You were overwhelmed by wild Pokémon!');
@@ -526,11 +677,22 @@ export class Game {
       return;
     }
     if (!t.alive) return;
-    if (mult === 0) return this.floater(t.pos, t.height + 0.2, 'No effect', '#aaaaaa');
+    if (mult === 0) {
+      if (t.side === 'wild') this.floater(t.pos, t.height + 0.2, 'immune', '#aaaaaa');
+      return;
+    }
     t.hp -= dmg;
-    t.flash = 0.12;
-    const color = mult > 1 ? '#ffd23f' : mult < 1 ? '#b8b8b8' : t.side === 'party' ? '#ff8080' : '#ffffff';
-    this.floater(t.pos, t.height + 0.2, mult > 1 ? `${dmg}!` : `${dmg}`, color, mult > 1);
+    t.flash = 0.1;
+    if (t.side === 'party') t.hurtT = 0.3;
+    else {
+      // Numbers only for damage you deal; your own team's health lives on the party cards.
+      audio.hit(mult);
+      this.damageNumber(t, dmg, mult);
+      if (mult > 1) {
+        this.fx.sparkle(mid(t), 3, 0.35);
+        this.hint('types', 'Super effective! Mix types in your team to cover more matchups.');
+      }
+    }
     if (t.hp <= 0) {
       t.hp = 0;
       this.faint(t);
@@ -540,24 +702,26 @@ export class Game {
   private faint(m: Mon) {
     if (m.side === 'wild') {
       this.wilds.splice(this.wilds.indexOf(m), 1);
-      m.dying = 0.6;
+      m.dying = 0.5;
       this.dying.push(m);
       this.defeated++;
-      this.burst(m.pos, TYPE_COLOR[m.sp.type], 10);
       this.grantXp(m);
+      if (this.defeated >= 3 && this.caught === 0) this.hint('hold', 'Tip: press F so your team holds fire while you line up a catch.');
       return;
     }
     m.fainted = true;
     m.target = null;
-    this.ui.toast(`${m.sp.name} fainted and returned to its ball!`, 'bad');
+    void audio.cry(m.sp.id, 0.5, 0.85);
+    this.ui.toast(`${m.sp.name} fainted!`, 'bad');
     if (this.party.every((p) => p.fainted)) this.gameOver('Your whole party fainted!');
   }
 
   private grantXp(w: Mon) {
-    const amount = w.level * 3 * (w.boss ? 4 : 1);
-    for (const p of this.party) {
-      if (p.fainted) continue;
-      p.xp += amount;
+    const awake = this.party.filter((p) => !p.fainted);
+    // Shared XP: a bigger team levels each member a bit slower.
+    const each = Math.round((w.level * 5 * (w.boss ? 4 : 1) * 2) / (awake.length + 1));
+    for (const p of awake) {
+      p.xp += each;
       while (p.xp >= xpNeed(p.level)) {
         p.xp -= xpNeed(p.level);
         this.levelUp(p);
@@ -570,8 +734,18 @@ export class Game {
     const old = p.maxHp;
     p.recalc();
     if (!p.fainted) p.hp += p.maxHp - old;
-    p.refreshLabel();
-    if (!p.fainted) this.floater(p.pos, p.height + 0.5, 'LEVEL UP!', '#7dffa0', true);
+    audio.levelUp();
+    if (!p.fainted) this.floater(p.pos, p.height + 0.5, 'Lv up!', '#7dffa0');
+    this.checkEvolution(p);
+  }
+
+  private checkEvolution(p: Mon) {
+    const evo = p.sp.evo;
+    if (!evo || p.evolveTo || p.level < evo.level) return;
+    p.evolveTo = SPECIES_BY_ID[evo.to];
+    p.evolving = 1.6;
+    audio.evolve();
+    this.ui.toast(`What? ${p.sp.name} is evolving!`, 'good');
   }
 
   revive(p: Mon, frac: number) {
@@ -585,7 +759,8 @@ export class Game {
     this.party.push(m);
     this.scene.add(m.obj);
     m.grow = 0;
-    this.burst(m.pos, 0xffffff, 10);
+    this.fx.sparkle(mid(m), 6);
+    void audio.cry(m.sp.id, 0.5);
   }
 
   // ───────────────────────────── catching ─────────────────────────────
@@ -598,34 +773,47 @@ export class Game {
     const from = this.trainer.pos.clone().setY(1.5);
     const to = this.aim.clone();
     const dist = distXZ(from, to);
-    const obj = buildPokeball();
-    obj.position.copy(from);
-    this.scene.add(obj);
-    this.balls.push({ obj, from, to, t: 0, dur: 0.3 + dist / 22, arc: 1.2 + dist * 0.12, state: 'fly', mon: null, success: false, resolveAt: 0 });
+    const sprite = this.fx.sprite('poke-ball', 0.45, true);
+    sprite.position.copy(from);
+    this.scene.add(sprite);
+    this.balls.push({
+      sprite, from, to, homing: this.aimMon, t: 0, dur: 0.3 + dist / 22, arc: 1.2 + dist * 0.12,
+      state: 'fly', mon: null, success: false, resolveAt: 0, wobbles: 0,
+    });
     for (const a of this.trainer.arms) a.rotation.x = -2.2;
+    audio.throw();
   }
 
   private updateBalls(dt: number) {
     for (const b of [...this.balls]) {
       b.t += dt;
       if (b.state === 'fly') {
+        if (b.homing?.alive) b.to.set(b.homing.pos.x, 0, b.homing.pos.z);
         const f = Math.min(1, b.t / b.dur);
-        b.obj.position.lerpVectors(b.from, b.to, f);
-        b.obj.position.y = b.from.y * (1 - f) + 0.2 * f + Math.sin(Math.PI * f) * b.arc;
-        b.obj.rotation.x += dt * 18;
+        b.sprite.position.lerpVectors(b.from, b.to, f);
+        b.sprite.position.y = b.from.y * (1 - f) + 0.25 * f + Math.sin(Math.PI * f) * b.arc;
+        b.sprite.material.rotation -= dt * 14;
         const target = this.wilds.find(
-          (w) => w.alive && w.grow >= 1 && distXZ(w.pos, b.obj.position) < w.radius + 0.35 && b.obj.position.y < w.height + 0.4,
+          (w) => w.alive && w.grow >= 1 && distXZ(w.pos, b.sprite.position) < w.radius + 0.35 && b.sprite.position.y < w.height + 0.4,
         );
         if (target) this.startCapture(b, target);
         else if (f >= 1) (b.state = 'miss'), (b.t = 0);
       } else if (b.state === 'miss') {
-        if (b.t < 0.5) b.obj.rotation.x += dt * 8 * (1 - b.t / 0.5);
-        if (b.t > 0.8) b.obj.scale.setScalar(Math.max(0.001, 1 - (b.t - 0.8) / 0.4));
+        if (b.t < 0.5) b.sprite.material.rotation -= dt * 8 * (1 - b.t / 0.5);
+        b.sprite.material.opacity = 1 - Math.max(0, (b.t - 0.8) / 0.4);
         if (b.t > 1.2) this.removeBall(b);
+      } else if (b.state === 'done') {
+        b.sprite.material.opacity = 1 - Math.max(0, (b.t - 0.5) / 0.3);
+        if (b.t > 0.8) this.removeBall(b);
       } else {
         // Three wobbles at 0.4 / 1.0 / 1.6s, then click. Failed catches break out early.
-        const phase = [0.4, 1.0, 1.6].find((s) => b.t >= s && b.t < s + 0.35);
-        b.obj.rotation.z = phase !== undefined ? Math.sin(((b.t - phase) / 0.35) * Math.PI * 2) * 0.45 : 0;
+        const starts = [0.4, 1.0, 1.6];
+        const phase = starts.find((s) => b.t >= s && b.t < s + 0.35);
+        if (phase !== undefined && b.wobbles < starts.indexOf(phase) + 1) {
+          b.wobbles++;
+          audio.wobble();
+        }
+        b.sprite.material.rotation = phase !== undefined ? Math.sin(((b.t - phase) / 0.35) * Math.PI * 2) * 0.5 : 0;
         if (b.t >= b.resolveAt) this.resolveCapture(b);
       }
     }
@@ -637,39 +825,49 @@ export class Game {
     b.state = 'wobble';
     b.t = 0;
     b.mon = w;
-    b.obj.position.set(w.pos.x, 0.2, w.pos.z);
-    b.obj.rotation.set(0, Math.atan2(this.trainer.pos.x - w.pos.x, this.trainer.pos.z - w.pos.z), 0);
+    b.sprite.position.set(w.pos.x, 0.25, w.pos.z);
+    b.sprite.material.rotation = 0;
     const frac = w.hp / w.maxHp;
     const chance = clamp((1 - 0.88 * frac) * w.sp.catchRate * (w.boss ? 0.4 : 1) + this.catchBonus, 0.04, 0.97);
     b.success = Math.random() < chance;
     b.resolveAt = b.success ? 2.2 : pick([0.8, 1.4, 2.0]);
     this.floater(w.pos, 1.4, `${Math.round(chance * 100)}% catch`, '#7fd3ff');
-    this.burst(b.obj.position, 0xffffff, 12);
+    this.fx.spawn('shine', b.sprite.position.clone().setY(0.6), { size: 1.4, life: 0.3, grow: 0.5 });
+    audio.ballOpen();
   }
 
   private resolveCapture(b: Ball) {
     const w = b.mon!;
-    this.removeBall(b);
+    const at = b.sprite.position.clone();
     if (!b.success) {
+      this.removeBall(b);
       w.capturing = false;
-      this.burst(b.obj.position, 0xff6060, 10);
+      this.fx.spawn('impact', at.setY(0.5), { size: 0.9, life: 0.2, grow: 0.5 });
       this.ui.toast(`Oh no! ${w.sp.name} broke free!`, 'warn');
+      audio.breakFree();
+      this.hint('hold', 'Tip: press F so your team holds fire while you line up a catch.');
       return;
     }
+    b.state = 'done';
+    b.t = 0;
+    b.sprite.material.color.setScalar(0.65); // the classic "clicked shut" dim
     this.wilds.splice(this.wilds.indexOf(w), 1);
     w.dispose();
     this.caught++;
-    this.burst(b.obj.position, 0xffe066, 22);
+    this.fx.sparkle(at.clone().setY(0.5), 8);
     this.ui.toast(`Gotcha! ${w.sp.name} was caught!`, 'good');
+    audio.caught();
+    audio.duck(1600);
+    setTimeout(() => void audio.cry(w.sp.id, 0.6), 900);
     const nm = new Mon(w.sp, w.level, 'party');
     nm.hp = Math.round(nm.maxHp * Math.max(0.5, w.hp / w.maxHp));
-    nm.pos.copy(b.obj.position).setY(0);
+    nm.pos.copy(at).setY(0);
     if (this.party.length < PARTY_MAX) this.addToParty(nm);
     else this.showSwap(nm);
   }
 
   private removeBall(b: Ball) {
-    b.obj.removeFromParent();
+    this.dropSprite(b.sprite);
     this.balls.splice(this.balls.indexOf(b), 1);
   }
 
@@ -685,6 +883,7 @@ export class Game {
       [
         ...this.party.map((p, i) => ({
           title: `Release ${p.sp.name}`,
+          icon: icon(url.front(p.sp.dex)),
           tag: p.sp.type,
           tagColor: hex(TYPE_COLOR[p.sp.type]),
           body: `Lv${p.level} · ${p.fainted ? 'Fainted' : `${Math.ceil(p.hp)}/${p.maxHp} HP`}`,
@@ -693,10 +892,11 @@ export class Game {
             this.party[i] = nm;
             this.scene.add(nm.obj);
             nm.grow = 0;
+            void audio.cry(nm.sp.id, 0.5);
             resume();
           },
         })),
-        { title: `Let ${nm.sp.name} go`, body: 'Keep your current team.', ghost: true, onClick: () => (nm.dispose(), resume()) },
+        { title: `Let ${nm.sp.name} go`, icon: icon(url.front(nm.sp.dex)), body: 'Keep your current team.', ghost: true, onClick: () => (nm.dispose(), resume()) },
       ],
     );
   }
@@ -725,53 +925,72 @@ export class Game {
     }
     t.obj.position.y = t.moving ? Math.abs(Math.sin(t.walk)) * 0.06 : 0;
     t.obj.visible = !(t.inv > 0 && Math.floor(this.time * 20) % 2);
-
-    this.particles = this.particles.filter((p) => {
-      p.t += dt;
-      p.vel.y -= 12 * dt;
-      p.mesh.position.addScaledVector(p.vel, dt);
-      p.mesh.scale.setScalar(p.size * Math.max(0.001, 1 - p.t / p.life));
-      if (p.t < p.life) return true;
-      p.mesh.removeFromParent();
-      return false;
-    });
   }
 
   private animateMon(m: Mon, dt: number) {
     m.anim += dt;
+    m.flash -= dt;
+    m.hurtT -= dt;
     m.grow = Math.min(1, m.grow + dt * 3);
     const hidden = m.capturing || m.fainted;
-    m.capScale += ((hidden ? 0 : 1) - m.capScale) * Math.min(1, dt * 12);
-    let s = m.scale * easeOutBack(m.grow) * m.capScale;
-    if (m.dying >= 0) s *= Math.max(0, m.dying / 0.6);
-    m.yaw.scale.setScalar(Math.max(0.0001, s));
-    m.yaw.visible = s > 0.01;
+    m.capScale += ((hidden ? 0 : 1) - m.capScale) * Math.min(1, dt * 10);
+    const s = Math.max(0.0001, easeOutBack(m.grow) * m.capScale);
 
-    const root = m.model.root;
-    root.position.y = m.sp.look.float ? 0.12 * Math.sin(m.anim * 3) : m.moving ? Math.abs(Math.sin(m.anim * 14)) * 0.12 : 0;
-    if (m.lunge > 0) m.lunge -= dt;
-    root.position.z = m.lunge > 0 ? Math.sin((1 - m.lunge / 0.25) * Math.PI) * 0.45 : 0;
-
-    m.flash -= dt;
-    const on = m.flash > 0;
-    if (on !== m.flashOn) {
-      m.flashOn = on;
-      for (const mat of m.model.mats) mat.emissive.setHex(on ? 0xffffff : mat.userData.baseEmissive);
+    if (m.evolveTo) {
+      m.evolving -= dt;
+      if (m.evolving <= 0) {
+        const old = m.sp.name;
+        m.setSpecies(m.evolveTo);
+        m.evolveTo = null;
+        this.fx.sparkle(mid(m), 10);
+        this.ui.toast(`${old} evolved into ${m.sp.name}!`, 'good');
+        void audio.cry(m.sp.id, 0.6);
+        this.checkEvolution(m); // Rare Candy can push past two thresholds
+      }
     }
-    if (m.model.flame) m.model.flame.scale.set(1, 0.85 + 0.25 * Math.sin(m.anim * 22) + 0.1 * Math.random(), 1);
-    for (const w of m.model.wings) w.rotation.z = Math.sin(m.anim * 16) * 0.6 * w.userData.side;
 
-    const h = m.model.height * s;
-    m.bar.obj.position.y = h + 0.3;
-    m.label.sprite.position.y = h + 0.62;
-    m.bar.obj.quaternion.copy(this.camera.quaternion);
-    m.bar.set(m.hp / m.maxHp);
-    const showUi = s > 0.3 && m.dying < 0;
-    m.bar.obj.visible = m.label.sprite.visible = showUi;
-    m.ring.visible = m.side === 'wild' && m.alive && m.hp / m.maxHp < 0.35;
+    // Hop while walking, breathe while idle, hover if it flies.
+    const hover = m.sp.float ? 0.45 + 0.12 * Math.sin(m.anim * 3) : 0;
+    const hop = m.moving && !m.sp.float ? Math.abs(Math.sin(m.anim * 11)) * 0.2 : 0;
+    const squash = m.moving ? 1 + 0.06 * Math.cos(m.anim * 22) : 1 + 0.025 * Math.sin(m.anim * 3);
+    const lunge = m.lunge > 0 ? Math.sin((1 - m.lunge / 0.25) * Math.PI) * 0.5 : 0;
+    if (m.lunge > 0) m.lunge -= dt;
+    let sink = 0;
+    if (m.dying >= 0) {
+      const k = Math.max(0, m.dying / 0.5);
+      m.mat.opacity = k;
+      sink = (1 - k) * 0.4;
+    }
+    m.sprite.position.set(m.lungeDir.x * lunge, hover + hop - sink, m.lungeDir.y * lunge);
+    m.sprite.scale.set((m.viewW * s * (m.flip ? -1 : 1)) / Math.sqrt(squash), m.viewH * s * squash, 1);
+    m.sprite.visible = s > 0.01;
+    m.shadow.visible = s > 0.05;
+
+    // Tint priority: evolving glow > hit flash > red capture beam > normal.
+    if (m.evolveTo) m.mat.color.setScalar(1 + 3 * (0.5 + 0.5 * Math.sin(this.time * 18)));
+    else if (m.flash > 0) m.mat.color.setScalar(5);
+    else if (m.capturing) m.mat.color.setRGB(3, 0.5, 0.5);
+    else m.mat.color.setScalar(1);
+
+    const top = m.h * s + hover;
+    // Party health lives on the cards; overhead bars are only for wild Pokémon you've hurt.
+    const showBar = m.side === 'wild' && m.alive && m.dying < 0 && m.hp < m.maxHp && s > 0.3;
+    m.bar.obj.visible = showBar;
+    if (showBar) {
+      m.bar.obj.position.y = top + 0.25;
+      m.bar.obj.quaternion.copy(this.camera.quaternion);
+      m.bar.set(m.hp / m.maxHp);
+    }
+    if (m.alphaIcon) {
+      m.alphaIcon.position.set(-0.78, top + 0.25, 0); // badge beside the HP bar
+      m.alphaIcon.visible = m.alive;
+    }
+    const weak = m.side === 'wild' && m.alive && m.hp / m.maxHp < WEAK;
+    m.ring.visible = weak;
+    if (weak) this.hint('weak', 'Weak wild Pokémon get a yellow ring — click one to throw a Poké Ball!');
   }
 
-  private face(o: THREE.Object3D, dx: number, dz: number, dt: number, rate = 12) {
+  private turn(o: THREE.Object3D, dx: number, dz: number, dt: number, rate = 12) {
     if (Math.abs(dx) + Math.abs(dz) < 1e-4) return;
     let d = Math.atan2(dx, dz) - o.rotation.y;
     d = Math.atan2(Math.sin(d), Math.cos(d));
@@ -783,40 +1002,71 @@ export class Game {
     if (r > max) (p.x *= max / r), (p.z *= max / r);
   }
 
-  private burst(pos: THREE.Vector3, color: number, n: number) {
-    for (let i = 0; i < n; i++) {
-      const mesh = new THREE.Mesh(GEO.sphere, glowMat(color));
-      const size = rand(0.05, 0.11);
-      mesh.position.set(pos.x, Math.max(pos.y, 0.4), pos.z);
-      mesh.scale.setScalar(size);
-      this.scene.add(mesh);
-      this.particles.push({ mesh, vel: new THREE.Vector3(rand(-3, 3), rand(2, 5), rand(-3, 3)), t: 0, life: rand(0.4, 0.7), size });
-    }
-  }
-
   private floater(pos: THREE.Vector3, y: number, text: string, color: string, big = false) {
     this.floaters.push({ el: this.ui.floater(text, color, big), pos: new THREE.Vector3(pos.x + rand(-0.3, 0.3), y, pos.z), t: 0 });
+  }
+
+  /** One number per target: rapid hits (sprays, volleys, several attackers) add into it instead of stacking. */
+  private damageNumber(t: Mon, dmg: number, mult: number) {
+    const f = this.dmgFloaters.get(t);
+    if (f && f.t < 0.35) {
+      f.total! += dmg;
+      f.t = 0;
+      f.pos.set(t.pos.x, t.height + 0.6, t.pos.z);
+      f.el.textContent = `${f.total}${mult > 1 || f.el.classList.contains('big') ? '!' : ''}`;
+      if (mult > 1) (f.el.classList.add('big'), (f.el.style.color = '#ffd23f'));
+      return;
+    }
+    const color = mult > 1 ? '#ffd23f' : mult < 1 ? '#c8c8c8' : '#ffffff';
+    this.floater(t.pos, t.height + 0.6, mult > 1 ? `${dmg}!` : `${dmg}`, color, mult > 1);
+    const nf = this.floaters[this.floaters.length - 1];
+    nf.total = dmg;
+    this.dmgFloaters.set(t, nf);
   }
 
   private updateFloaters(dt: number) {
     const v = new THREE.Vector3();
     this.floaters = this.floaters.filter((f) => {
       f.t += dt;
-      f.pos.y += dt * 1.3;
+      f.pos.y += dt * 1.2;
       v.copy(f.pos).project(this.camera);
       const x = ((v.x + 1) / 2) * innerWidth, y = ((1 - v.y) / 2) * innerHeight;
       f.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
       f.el.style.opacity = String(1 - (f.t / FLOATER_LIFE) ** 2);
       if (f.t < FLOATER_LIFE) return true;
       f.el.remove();
+      for (const [m, df] of this.dmgFloaters) if (df === f) this.dmgFloaters.delete(m);
       return false;
     });
   }
 
+  private arrows(): Arrow[] {
+    const out: Arrow[] = [];
+    const v = new THREE.Vector3();
+    for (const w of this.wilds) {
+      if (!w.alive || out.length >= 12) continue;
+      v.copy(w.pos).setY(0.5).project(this.camera);
+      let { x, y } = v;
+      if (v.z < 1 && Math.abs(x) <= 1 && Math.abs(y) <= 1) continue;
+      if (v.z > 1) (x = -x), (y = -y);
+      const m = Math.max(Math.abs(x), Math.abs(y));
+      x /= m;
+      y /= m;
+      out.push({
+        x: ((x * 0.95 + 1) / 2) * innerWidth,
+        y: ((1 - y * 0.9) / 2) * innerHeight,
+        angle: Math.atan2(-y, x),
+        kind: w.boss ? 'alpha' : w.hp / w.maxHp < WEAK ? 'weak' : 'wild',
+      });
+    }
+    return out;
+  }
+
   private updateCamera(dt: number) {
     this.camFocus.lerp(this.trainer.pos, 1 - Math.exp(-6 * dt));
-    this.camera.position.copy(this.camFocus).add(CAM_OFFSET);
-    this.camera.lookAt(this.camFocus.x, this.camFocus.y + 0.5, this.camFocus.z);
+    const look = this.camFocus.clone().add(CAM_LEAD);
+    this.camera.position.copy(look).add(CAM_OFFSET);
+    this.camera.lookAt(look);
     this.sun.position.copy(this.camFocus).add(SUN_OFFSET);
     this.sun.target.position.copy(this.camFocus);
   }
@@ -829,17 +1079,21 @@ export class Game {
       hp: this.trainer.hp,
       maxHp: this.trainer.maxHp,
       hold: this.hold,
+      muted: audio.muted,
     });
     this.ui.setParty(
       this.party.map((p) => ({
         name: p.sp.name,
+        icon: icon(url.front(p.sp.dex)),
         level: p.level,
-        type: p.sp.type,
-        color: hex(TYPE_COLOR[p.sp.type as PType]),
+        move: p.sp.move.name,
+        color: hex(TYPE_COLOR[p.sp.move.type]),
         hp: p.hp,
         maxHp: p.maxHp,
-        xpFrac: p.xp / xpNeed(p.level),
+        xpFrac: Math.min(1, p.xp / xpNeed(p.level)),
         fainted: p.fainted,
+        hurt: p.hurtT > 0,
+        evolving: p.evolveTo !== null,
       })),
     );
   }

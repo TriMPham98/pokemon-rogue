@@ -1,15 +1,22 @@
 import * as THREE from 'three';
 import type { Species } from './data';
-import { buildMonModel, buildTrainer, shared, type MonModel } from './models';
+import { getTex, url } from './assets';
+import { buildTrainer, shared } from './models';
+
+/** World units per sprite pixel. */
+const PX = 0.027;
 
 const BAR_W = 1;
-const barBgGeo = new THREE.PlaneGeometry(BAR_W + 0.08, 0.17);
-const barFgGeo = new THREE.PlaneGeometry(BAR_W, 0.11);
-const barBgMat = shared(new THREE.MeshBasicMaterial({ color: 0x1b1b1b, depthTest: false, transparent: true, opacity: 0.85 }));
+const barBgGeo = new THREE.PlaneGeometry(BAR_W + 0.08, 0.15);
+const barFgGeo = new THREE.PlaneGeometry(BAR_W, 0.09);
+const barBgMat = shared(new THREE.MeshBasicMaterial({ color: 0x1b1b1b, depthTest: false, transparent: true, opacity: 0.8 }));
 
 const ringGeo = new THREE.RingGeometry(0.6, 0.78, 32);
 /** Pulsing ring under weakened wild Pokémon: "throw a ball now". Opacity animated globally. */
 export const weakRingMat = shared(new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, depthWrite: false }));
+
+const shadowGeo = new THREE.CircleGeometry(1, 24);
+const shadowMat = shared(new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.18, depthWrite: false }));
 
 export class HpBar {
   readonly obj = new THREE.Group();
@@ -33,59 +40,17 @@ export class HpBar {
   }
 }
 
-export class Label {
-  readonly sprite: THREE.Sprite;
-  private ctx: CanvasRenderingContext2D;
-  private tex: THREE.CanvasTexture;
-  private key = '';
-
-  constructor(text: string, color: string) {
-    const c = document.createElement('canvas');
-    c.width = 256;
-    c.height = 64;
-    this.ctx = c.getContext('2d')!;
-    this.tex = new THREE.CanvasTexture(c);
-    this.tex.colorSpace = THREE.SRGBColorSpace;
-    this.sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.tex, depthTest: false, transparent: true }));
-    this.sprite.scale.set(2.2, 0.55, 1);
-    this.sprite.renderOrder = 1000;
-    this.set(text, color);
-  }
-
-  set(text: string, color: string) {
-    if (this.key === text + color) return;
-    this.key = text + color;
-    const ctx = this.ctx;
-    ctx.clearRect(0, 0, 256, 64);
-    ctx.font = 'bold 34px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.lineWidth = 7;
-    ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-    ctx.strokeText(text, 128, 34);
-    ctx.fillStyle = color;
-    ctx.fillText(text, 128, 34);
-    this.tex.needsUpdate = true;
-  }
-
-  dispose() {
-    this.tex.dispose();
-  }
-}
-
-let uidSeq = 0;
-
 export type Side = 'party' | 'wild';
 
 export class Mon {
-  readonly uid = ++uidSeq;
   xp = 0;
   hp = 0;
   maxHp = 0;
   cd = Math.random() * 0.8;
   lunge = 0;
+  lungeDir = new THREE.Vector2();
   flash = 0;
-  flashOn = false;
+  hurtT = 0; // recent damage, drives the party card flash
   grow = 0; // spawn pop-in, 0..1
   capScale = 1; // shrinks to 0 while inside a Poké Ball / fainted
   retarget = 0;
@@ -95,57 +60,97 @@ export class Mon {
   moving = false;
   anim = Math.random() * 10;
   target: Unit | null = null;
+  evolveTo: Species | null = null;
+  evolving = 0;
 
-  readonly obj = new THREE.Group(); // world position, unrotated (bars/labels live here)
-  readonly yaw = new THREE.Group(); // facing + scale
-  readonly model: MonModel;
+  /** Sprite view: back sprite when heading away from the camera, mirrored to face left/right. */
+  back = false;
+  flip = false;
+  viewW = 1;
+  viewH = 1;
+  w = 1;
+  h = 1;
+
+  readonly obj = new THREE.Group();
+  readonly sprite: THREE.Sprite;
+  readonly mat = new THREE.SpriteMaterial({ alphaTest: 0.1 });
+  readonly shadow = new THREE.Mesh(shadowGeo, shadowMat);
   readonly bar = new HpBar();
-  readonly label: Label;
-  readonly ring: THREE.Mesh;
-  readonly scale: number;
+  readonly ring = new THREE.Mesh(ringGeo, weakRingMat);
+  readonly alphaIcon?: THREE.Sprite;
 
-  constructor(readonly sp: Species, public level: number, readonly side: Side, readonly boss = false) {
-    this.model = buildMonModel(sp);
-    this.scale = (boss ? 1.75 : 1) * Math.min(1.25, 0.9 + level * 0.012);
-    this.label = new Label(this.labelText(), this.labelColor());
-    this.ring = new THREE.Mesh(ringGeo, weakRingMat);
+  constructor(public sp: Species, public level: number, readonly side: Side, readonly boss = false) {
+    this.sprite = new THREE.Sprite(this.mat);
+    this.sprite.center.set(0.5, 0);
+    this.shadow.rotation.x = -Math.PI / 2;
+    this.shadow.position.y = 0.03;
     this.ring.rotation.x = -Math.PI / 2;
     this.ring.position.y = 0.04;
-    this.ring.scale.setScalar(this.scale);
     this.ring.visible = false;
-    this.yaw.add(this.model.root);
-    this.obj.add(this.yaw, this.bar.obj, this.label.sprite, this.ring);
-    this.recalc();
-    this.hp = this.maxHp;
+    this.obj.add(this.sprite, this.shadow, this.ring, this.bar.obj);
+    if (boss) {
+      const a = getTex(url.fx('alpha'));
+      this.alphaIcon = new THREE.Sprite(new THREE.SpriteMaterial({ map: a.tex, depthTest: false }));
+      this.alphaIcon.scale.setScalar(0.45);
+      this.alphaIcon.renderOrder = 1000;
+      this.obj.add(this.alphaIcon);
+    }
+    this.back = side === 'party';
+    this.setSpecies(sp);
   }
 
   get pos() {
     return this.obj.position;
   }
   get radius() {
-    return this.model.radius * this.scale;
+    return Math.max(0.3, this.w * 0.35);
   }
   get height() {
-    return this.model.height * this.scale;
+    return this.h;
   }
   /** Can act and be targeted. */
   get alive() {
     return !this.fainted && this.dying < 0 && !this.capturing;
   }
 
+  setSpecies(sp: Species) {
+    const frac = this.maxHp ? this.hp / this.maxHp : 1;
+    this.sp = sp;
+    this.recalc();
+    this.hp = Math.round(this.maxHp * frac);
+    const f = getTex(url.front(sp.dex));
+    const k = PX * (this.boss ? 1.6 : 1);
+    this.w = f.w * k;
+    this.h = f.h * k;
+    this.shadow.scale.setScalar(Math.max(0.3, this.w * 0.36));
+    this.ring.scale.setScalar(Math.max(0.8, this.w * 0.65));
+    this.applyView();
+  }
+
   recalc() {
     this.maxHp = Math.round(this.sp.hp * (1 + 0.15 * (this.level - 1)) * (this.boss ? 3.5 : 1));
   }
 
-  labelText() {
-    if (this.boss) return `ALPHA Lv${this.level}`;
-    return this.side === 'party' ? `${this.sp.name} ${this.level}` : `Lv${this.level}`;
+  face(dx: number, dz: number) {
+    const len = Math.hypot(dx, dz);
+    if (len < 1e-4) return;
+    const nx = dx / len, nz = dz / len;
+    if (nz < -0.45) this.back = true;
+    else if (nz > 0.25) this.back = false;
+    // Front sprites look left; back sprites look right.
+    if (Math.abs(nx) > 0.2) this.flip = this.back ? nx < 0 : nx > 0;
+    this.applyView();
   }
-  labelColor() {
-    return this.boss ? '#ff9a3c' : this.side === 'party' ? '#a6f5b0' : '#ffffff';
-  }
-  refreshLabel() {
-    this.label.set(this.labelText(), this.labelColor());
+
+  private applyView() {
+    const st = getTex(this.back ? url.back(this.sp.dex) : url.front(this.sp.dex));
+    if (this.mat.map !== st.tex) {
+      this.mat.map = st.tex;
+      this.mat.needsUpdate = true;
+    }
+    const k = PX * (this.boss ? 1.6 : 1);
+    this.viewW = st.w * k;
+    this.viewH = st.h * k;
   }
 
   dispose() {
@@ -153,7 +158,6 @@ export class Mon {
       const m = (o as THREE.Mesh).material;
       if (m && !Array.isArray(m) && !m.userData.shared) m.dispose();
     });
-    this.label.dispose();
     this.obj.removeFromParent();
   }
 }

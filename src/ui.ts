@@ -3,7 +3,7 @@ export interface CardSpec {
   body?: string;
   tag?: string;
   tagColor?: string;
-  icon?: string;
+  icon?: string; // image URL
   ghost?: boolean;
   onClick: () => void;
 }
@@ -15,23 +15,36 @@ export interface HudState {
   hp: number;
   maxHp: number;
   hold: boolean;
+  muted: boolean;
 }
 
 export interface PartyEntry {
   name: string;
+  icon: string;
   level: number;
-  type: string;
+  move: string;
   color: string;
   hp: number;
   maxHp: number;
   xpFrac: number;
   fainted: boolean;
+  hurt: boolean;
+  evolving: boolean;
+}
+
+export interface Arrow {
+  x: number;
+  y: number;
+  angle: number;
+  kind: 'wild' | 'weak' | 'alpha';
 }
 
 const $ = (id: string) => document.getElementById(id)!;
 
 export class UI {
   private lastParty = '';
+  private arrows: HTMLElement[] = [];
+  private hintTimer = 0;
 
   constructor() {
     $('ui').innerHTML = `
@@ -43,7 +56,9 @@ export class UI {
         <div class="pill" id="hud-mode"></div>
       </div>
       <div class="party" id="party"></div>
-      <div class="help">WASD move · Click / Space throw Poké Ball · F hold fire / attack</div>
+      <div class="hint" id="hint"></div>
+      <div class="help" id="help"></div>
+      <div class="arrows" id="arrows"></div>
       <div class="floaters" id="floaters"></div>
       <div class="toasts" id="toasts"></div>
       <div class="banner" id="banner"></div>
@@ -61,8 +76,9 @@ export class UI {
     hp.style.background = pct > 50 ? '#4cd964' : pct > 25 ? '#ffcc00' : '#ff3b30';
     $('hud-hp-text').textContent = `${Math.ceil(s.hp)}/${s.maxHp}`;
     const mode = $('hud-mode');
-    mode.textContent = s.hold ? 'HOLDING FIRE' : 'ATTACKING';
+    mode.textContent = s.hold ? 'Holding fire' : 'Attacking';
     mode.className = `pill ${s.hold ? 'hold' : 'attack'}`;
+    $('help').textContent = `WASD move · Click throw · F hold fire · Esc pause · M ${s.muted ? 'unmute' : 'mute'}`;
   }
 
   setParty(list: PartyEntry[]) {
@@ -70,17 +86,21 @@ export class UI {
     for (let i = 0; i < 6; i++) {
       const p = list[i];
       if (!p) {
-        html += `<div class="mon-card empty">empty</div>`;
+        html += `<div class="mon-card empty"></div>`;
         continue;
       }
       const pct = Math.max(0, (p.hp / p.maxHp) * 100);
       const col = pct > 50 ? '#4cd964' : pct > 25 ? '#ffcc00' : '#ff3b30';
+      const cls = [p.fainted && 'fainted', p.hurt && 'hurt', p.evolving && 'evolving'].filter(Boolean).join(' ');
       html += `
-        <div class="mon-card ${p.fainted ? 'fainted' : ''}">
-          <div class="mon-head"><span class="dot" style="background:${p.color}"></span><b>${p.name}</b><span class="lv">Lv${p.level}</span></div>
-          <div class="bar"><div style="width:${pct}%;background:${col}"></div></div>
-          <div class="mon-foot"><span>${p.fainted ? 'FAINTED' : p.type}</span><span>${Math.ceil(p.hp)}/${p.maxHp}</span></div>
-          <div class="xp"><div style="width:${p.xpFrac * 100}%"></div></div>
+        <div class="mon-card ${cls}">
+          <img class="mon-icon" src="${p.icon}" alt="" />
+          <div class="mon-info">
+            <div class="mon-head"><b>${p.name}</b><span class="lv">Lv${p.level}</span></div>
+            <div class="bar"><div style="width:${pct}%;background:${col}"></div></div>
+            <div class="mon-foot"><span><span class="dot" style="background:${p.color}"></span>${p.fainted ? 'Fainted' : p.move}</span><span>${Math.ceil(p.hp)}/${p.maxHp}</span></div>
+            <div class="xp"><div style="width:${p.xpFrac * 100}%"></div></div>
+          </div>
         </div>`;
     }
     if (html !== this.lastParty) {
@@ -97,7 +117,7 @@ export class UI {
       const btn = document.createElement('button');
       btn.className = `choice ${c.ghost ? 'ghost' : ''}`;
       btn.innerHTML = `
-        ${c.icon ? `<div class="icon">${c.icon}</div>` : ''}
+        ${c.icon ? `<img class="icon" src="${c.icon}" alt="" />` : ''}
         <div class="title">${c.title}</div>
         ${c.tag ? `<div class="tag" style="background:${c.tagColor ?? '#666'}">${c.tag}</div>` : ''}
         ${c.body ? `<div class="body">${c.body}</div>` : ''}`;
@@ -115,11 +135,22 @@ export class UI {
   }
 
   toast(msg: string, kind: 'info' | 'good' | 'bad' | 'warn' = 'info') {
+    const box = $('toasts');
+    while (box.children.length >= 3) box.firstElementChild!.remove();
     const el = document.createElement('div');
     el.className = `toast ${kind}`;
     el.textContent = msg;
-    $('toasts').appendChild(el);
+    box.appendChild(el);
     setTimeout(() => el.remove(), 2800);
+  }
+
+  /** Contextual tutorial line above the party panel. */
+  hint(text: string) {
+    const el = $('hint');
+    el.textContent = text;
+    el.classList.add('show');
+    clearTimeout(this.hintTimer);
+    this.hintTimer = window.setTimeout(() => el.classList.remove('show'), 6000);
   }
 
   banner(title: string, sub: string) {
@@ -144,5 +175,23 @@ export class UI {
     el.style.color = color;
     $('floaters').appendChild(el);
     return el;
+  }
+
+  /** Edge-of-screen pointers toward off-screen wild Pokémon. */
+  setArrows(list: Arrow[]) {
+    const box = $('arrows');
+    while (this.arrows.length < list.length) {
+      const el = document.createElement('div');
+      el.className = 'arrow';
+      box.appendChild(el);
+      this.arrows.push(el);
+    }
+    this.arrows.forEach((el, i) => {
+      const a = list[i];
+      el.style.display = a ? 'block' : 'none';
+      if (!a) return;
+      el.className = `arrow ${a.kind}`;
+      el.style.transform = `translate(${a.x}px, ${a.y}px) translate(-50%, -50%) rotate(${a.angle}rad)`;
+    });
   }
 }

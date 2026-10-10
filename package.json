@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "assets": "node --experimental-strip-types --no-warnings scripts/fetch-assets.ts",
+    "predev": "npm run assets",
     "dev": "vite",
+    "prebuild": "npm run assets",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
