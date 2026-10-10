@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FX_ALL, ITEMS, MUSIC, SPECIES, TRAINER_SHEET } from '../src/data.ts';
 import { ENV, type TileArt } from '../src/env.ts';
-import { encodePng, makeTileset, renderCutout, renderGrid, spriteFrame } from './gba-tiles.ts';
+import { addTrunk, encodePng, makeTileset, renderCutout, renderGrid, spriteFrame } from './gba-tiles.ts';
 
 const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', 'public', 'assets');
 const POKEAPI = 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites';
@@ -209,6 +209,7 @@ async function buildEnv() {
         if (!p || !sec) continue;
         const ts = makeTileset(p, sec);
         img = a.bg ? renderCutout(ts, a.grid, a.bg) : renderGrid(ts, a.grid);
+        if (a.trunk) img = addTrunk(ts, img);
         if (a.quad !== undefined) {
           const qx = (a.quad & 1) * 8, qy = (a.quad >> 1) * 8, src = img.px.slice();
           for (let y = 0; y < img.h; y++)

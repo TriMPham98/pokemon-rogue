@@ -13,6 +13,7 @@ export interface TileArt {
   grid: number[][];
   bg?: number[];
   quad?: 0 | 1 | 2 | 3; // fill the tile with this 8×8 quarter (sand only comes with grassy corners)
+  trunk?: boolean; // add a trunk under the canopy (map trees end at the tile edge; standing up they'd float)
 }
 /** An object-event sprite (first frame of the sheet). */
 export interface SpriteArt {
@@ -23,6 +24,7 @@ export interface SpriteArt {
 export type EnvArt = TileArt | SpriteArt;
 
 const G = (grid: number[][], bg?: number[], sec = 'pallet_town', quad?: TileArt['quad']): TileArt => ({ prim: 'general', sec, grid, bg, quad });
+const tree = (art: TileArt): TileArt => ({ ...art, trunk: true });
 const GRASS_BG = [1, 8, 9];
 
 export const ENV = {
@@ -35,13 +37,13 @@ export const ENV = {
   sand: G([[259]], undefined, 'pallet_town', 3),
   dirt: G([[262]], undefined, 'pallet_town', 3),
   water: G([[299]]),
-  pine: G([[14, 15], [30, 31]], GRASS_BG),
+  pine: tree(G([[14, 15], [30, 31]], GRASS_BG)),
   hedge: G([[318, 319]], [...GRASS_BG, 260]),
   fencePost: G([[233]], GRASS_BG),
   routeSign: G([[3]], GRASS_BG),
   tipsSign: G([[2]], GRASS_BG),
   // Viridian Forest's big round trees and white flowers
-  forestTree: G([[648, 649, 650], [664, 665, 666]], GRASS_BG, 'viridian_forest'),
+  forestTree: tree(G([[648, 649, 650], [664, 665, 666]], GRASS_BG, 'viridian_forest')),
   forestFlowers: G([[642]], undefined, 'viridian_forest'),
   // ── caves: the cave tilesets share a layout (641 floor, 642 boulder, 643 rubble) with their own palettes ──
   caveFloor: G([[641]], undefined, 'cave'),

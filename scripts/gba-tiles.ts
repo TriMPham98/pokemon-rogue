@@ -145,6 +145,36 @@ export function drawMetatile(ts: Tileset, id: number, img: Image, ox: number, oy
   }
 }
 
+/**
+ * Gives a canopy a trunk. On the map a tree's trunk is hidden by the tile row below it, so cut out on its own the
+ * canopy ends flat, as if sunk into the ground. The trunk comes from FireRed's own round tree (general metatiles
+ * 20/21/36/37): its brown pixels (red ≥ green; everything else there is leaves or shadow), drawn under the canopy.
+ */
+export function addTrunk(ts: Tileset, img: Image): Image {
+  const src = renderGrid(ts, [[20, 21], [36, 37]]);
+  const pts: [number, number][] = [];
+  for (let y = 16; y < 32; y++)
+    for (let x = 0; x < 32; x++) {
+      const o = (y * 32 + x) * 4;
+      if (src.px[o + 3] && src.px[o] >= src.px[o + 1]) pts.push([x, y]);
+    }
+  if (!pts.length) return img;
+  const x0 = Math.min(...pts.map((p) => p[0])), x1 = Math.max(...pts.map((p) => p[0]));
+  const y0 = Math.min(...pts.map((p) => p[1])), y1 = Math.max(...pts.map((p) => p[1]));
+  // Stretched to twice its height: on the map only its stub shows, standing up it needs to read as a trunk.
+  const tw = x1 - x0 + 1, th = (y1 - y0 + 1) * 2;
+  const hidden = 2; // tuck the top of the trunk under the leaves
+  const out = { w: img.w, h: img.h + th - hidden, px: new Uint8Array(img.w * (img.h + th - hidden) * 4) };
+  out.px.set(img.px);
+  const ox = Math.round((img.w - tw) / 2), oy = img.h - hidden;
+  for (const [x, y] of pts)
+    for (const dy of [0, 1]) {
+      const tx = ox + x - x0, ty = oy + (y - y0) * 2 + dy, o = (ty * out.w + tx) * 4;
+      if (!out.px[o + 3]) out.px.set(src.px.subarray((y * 32 + x) * 4, (y * 32 + x) * 4 + 4), o);
+    }
+  return out;
+}
+
 /** Renders a grid of metatile ids (rows of columns; -1 = empty) into an image. */
 export function renderGrid(ts: Tileset, grid: number[][], layers: 0 | 1 | 2 = 2): Image {
   const h = grid.length * 16, w = Math.max(...grid.map((r) => r.length)) * 16;
