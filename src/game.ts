@@ -1,6 +1,8 @@
 import * as THREE from 'three';
-import { type Species, FX_EXTRA, ITEMS, MOVES, MUSIC, SPECIES, SPECIES_BY_ID, STARTERS, STONE_NAME, TYPE_COLOR, hex, typeMult, type Evo, type Move } from './data';
-import { ARENA_R, buildArena } from './models';
+import { type Species, FX_EXTRA, ITEMS, MOVES, MUSIC, SHINY_ODDS, SPECIES, SPECIES_BY_ID, STARTERS, STONE_NAME, TYPE_COLOR, hex, typeMult, type Evo, type Move } from './data';
+import { ARENA_R } from './models';
+import { BIOMES, biomeFor, buildArena, disposeArena, type Biome } from './biomes';
+import { UNLOCKS, finishRun, register, save } from './progress';
 import { Mon, Trainer, weakRingMat, type Unit } from './entities';
 import { Effects } from './fx';
 import { audio } from './audio';
@@ -56,6 +58,11 @@ const CAM_LEAD = new THREE.Vector3(0, 0.5, 1.5);
 const SUN_OFFSET = new THREE.Vector3(12, 22, 8);
 const FLOATER_LIFE = 0.8;
 const WEAK = 0.35;
+const DASH_TIME = 0.18;
+const DASH_SPEED = 24;
+const DASH_CD = 1.4;
+const SLAM_R = 3.4;
+const SLAM_WIND = 1.2;
 
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 const pick = <T>(arr: T[]) => arr[Math.floor(Math.random() * arr.length)];
@@ -66,6 +73,11 @@ const shuffle = <T>(arr: T[]) => arr.map((v) => [Math.random(), v] as const).sor
 const xpNeed = (level: number) => Math.round(level * level * 0.6);
 const EVOLVE_TIME = 2.6;
 const mid = (u: Unit) => u.pos.clone().setY(u.height * 0.5);
+function weightedPick<T>(items: T[], weight: (t: T) => number) {
+  let r = Math.random() * items.reduce((a, t) => a + weight(t), 0);
+  for (const t of items) if ((r -= weight(t)) <= 0) return t;
+  return items[items.length - 1];
+}
 
 const REWARDS: Reward[] = [
   {
@@ -149,6 +161,20 @@ export class Game {
   private uiTimer = 0;
   private time = 0;
   private seenHints: Set<string>;
+  private hemi = new THREE.HemisphereLight(0xdff2ff, 0x4f7a3a, 1.6);
+  private arena: THREE.Object3D | null = null;
+  private biome: Biome = BIOMES[0];
+  private focus: Mon | null = null;
+  private focusRing: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
+  private slams = new Map<Mon, THREE.Group>();
+  private dashT = 0;
+  private dashCd = 0;
+  private dashDir = new THREE.Vector2();
+  private dodge = 0;
+  private shake = 0;
+  private hitStop = 0;
+  private hitStopCd = 0;
+  private unlockedAtStart = new Set<string>();
 
   constructor(container: HTMLElement) {
     const r = this.renderer;
@@ -159,14 +185,14 @@ export class Game {
 
     this.scene.background = new THREE.Color(0xa8dcff);
     this.scene.fog = new THREE.Fog(0xa8dcff, 30, 60);
-    this.scene.add(new THREE.HemisphereLight(0xdff2ff, 0x4f7a3a, 1.6));
+    this.scene.add(this.hemi);
     const s = this.sun;
     s.castShadow = true;
     s.shadow.mapSize.set(2048, 2048);
     Object.assign(s.shadow.camera, { left: -24, right: 24, top: 24, bottom: -24, near: 1, far: 70 });
     s.shadow.bias = -0.0005;
     this.scene.add(s, s.target);
-    this.scene.add(buildArena());
+    this.setBiome(BIOMES[0]);
     this.scene.add(this.trainer.obj);
 
     this.reticle = new THREE.Mesh(
@@ -176,6 +202,14 @@ export class Game {
     this.reticle.rotation.x = -Math.PI / 2;
     this.reticle.visible = false;
     this.scene.add(this.reticle);
+
+    this.focusRing = new THREE.Mesh(
+      new THREE.RingGeometry(0.75, 0.95, 4, 1),
+      new THREE.MeshBasicMaterial({ color: 0xff3b30, transparent: true, opacity: 0.9, depthWrite: false }),
+    );
+    this.focusRing.rotation.x = -Math.PI / 2;
+    this.focusRing.visible = false;
+    this.scene.add(this.focusRing);
 
     try {
       this.seenHints = new Set(JSON.parse(localStorage.getItem('pr-hints') ?? '[]'));
@@ -193,7 +227,7 @@ export class Game {
 
   private async load() {
     const srcs = [
-      ...SPECIES.flatMap((s) => [url.front(s.dex), url.back(s.dex)]),
+      ...SPECIES.flatMap((s) => [url.front(s.dex), url.back(s.dex), url.front(s.dex, true), url.back(s.dex, true)]),
       ...[...new Set([...Object.values(MOVES).map((m) => m.fx), ...FX_EXTRA])].map(url.fx),
       ...ITEMS.map(url.item),
     ];
@@ -221,6 +255,8 @@ export class Game {
       if (k === ' ') this.throwBall();
       if (k === 'f') this.toggleHold();
       if (k === 'm') audio.toggleMute();
+      if (k === 'shift') this.dash();
+      if (k === 'e') this.setFocus(this.aimMon);
       if (k === 'escape' || k === 'p') this.togglePause();
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.key.toLowerCase()));
@@ -233,7 +269,9 @@ export class Game {
     el.addEventListener('pointermove', (e) => this.mouse.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1));
     el.addEventListener('pointerdown', (e) => {
       if (e.button === 0) this.throwBall();
+      if (e.button === 2) this.setFocus(this.aimMon);
     });
+    el.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   private resize() {
@@ -255,11 +293,17 @@ export class Game {
 
   private showStarter() {
     this.state = 'starter';
+    this.unlockedAtStart = new Set(UNLOCKS.filter((u) => u.ok()).map((u) => u.id));
+    const meta = save.runs
+      ? `<br/><span class="meta">Best: round ${save.best} · Pokédex ${save.caught.length}/${SPECIES.length} · ✦ ${save.shinies.length} shiny</span>`
+      : '';
+    const choices = [...STARTERS.map((id) => ({ id, need: '' })), ...UNLOCKS.map((u) => ({ id: u.id, need: u.ok() ? '' : u.need }))];
     this.ui.showModal(
       'Choose your partner',
-      'Survive endless rounds of wild Pokémon. Weaken them, then throw Poké Balls to build a team of six.',
-      STARTERS.map((id) => {
+      `Survive endless rounds of wild Pokémon. Weaken them, then throw Poké Balls to build a team of six.${meta}`,
+      choices.map(({ id, need }) => {
         const sp = SPECIES_BY_ID[id];
+        if (need) return { title: '???', icon: icon(url.front(sp.dex)), body: `🔒 ${need} to unlock.`, locked: true, onClick: () => {} };
         return {
           title: sp.name,
           icon: icon(url.front(sp.dex)),
@@ -271,6 +315,7 @@ export class Game {
             const m = new Mon(sp, 6, 'party');
             m.pos.set(1.5, 0, 1.5);
             this.addToParty(m);
+            register(sp.id);
             this.ui.hideModal();
             this.state = 'playing';
             this.startRound(1);
@@ -280,15 +325,28 @@ export class Game {
     );
   }
 
+  private setBiome(b: Biome) {
+    if (this.arena) disposeArena(this.arena);
+    this.arena = buildArena(b);
+    this.scene.add(this.arena);
+    (this.scene.background as THREE.Color).setHex(b.sky);
+    this.scene.fog!.color.setHex(b.sky);
+    this.hemi.intensity = b.light;
+    this.biome = b;
+  }
+
   private startRound(n: number) {
     this.round = n;
     this.toSpawn = Math.min(26, 2 + n * 2);
     this.bossPending = n % 5 === 0;
     this.spawnTimer = 1.5;
     this.criedThisRound.clear();
-    this.ui.banner(`Round ${n}`, this.bossPending ? 'An Alpha lurks nearby…' : 'Wild Pokémon incoming!');
+    const b = biomeFor(n);
+    const newArea = b !== this.biome || n === 1;
+    if (b !== this.biome) this.setBiome(b);
+    this.ui.banner(newArea ? b.name : `Round ${n}`, newArea ? `Round ${n} · a new area` : this.bossPending ? 'An Alpha lurks nearby…' : 'Wild Pokémon incoming!');
     audio.roundStart();
-    audio.playMusic(this.bossPending ? MUSIC.boss : MUSIC.battle);
+    audio.playMusic(this.bossPending ? MUSIC.boss : b.music);
     if (n === 1) this.hint('move', 'Move with WASD — your Pokémon follow you and battle on their own.');
   }
 
@@ -375,9 +433,13 @@ export class Game {
     this.reticle.visible = false;
     audio.stopMusic();
     audio.faint();
+    const best = finishRun(this.round);
+    const unlocked = UNLOCKS.filter((u) => u.ok() && !this.unlockedAtStart.has(u.id)).map((u) => SPECIES_BY_ID[u.id].name);
     this.ui.showModal(
       'Run over',
-      `${reason}<br/>You reached <b>round ${this.round}</b>, defeated <b>${this.defeated}</b> and caught <b>${this.caught}</b> Pokémon.`,
+      `${reason}<br/>You reached <b>round ${this.round}</b>, defeated <b>${this.defeated}</b> and caught <b>${this.caught}</b> Pokémon.` +
+        `<br/><span class="meta">${best ? '<span class="best">New best!</span>' : `Best: round ${save.best}`} · Pokédex ${save.caught.length}/${SPECIES.length}</span>` +
+        (unlocked.length ? `<br/><span class="meta best">New starter unlocked: ${unlocked.join(', ')}!</span>` : ''),
       [{ title: 'Play again', icon: icon(url.item('poke-ball')), body: 'Start a new run', onClick: () => location.reload() }],
     );
   }
@@ -410,11 +472,15 @@ export class Game {
     requestAnimationFrame(this.loop);
     const dt = Math.min(this.clock.getDelta(), 1 / 20);
     const active = this.state !== 'paused';
-    if (active) this.time += dt;
-    if (this.state === 'playing') this.update(dt);
+    // Hit-stop: a few frames of near-freeze on big hits sells the impact.
+    let gdt = dt;
+    if (this.hitStop > 0) (this.hitStop -= dt), (gdt = dt * 0.08);
+    this.hitStopCd -= dt;
+    if (active) this.time += gdt;
+    if (this.state === 'playing') this.update(gdt);
     if (active) {
-      this.animate(dt);
-      this.fx.update(dt);
+      this.animate(gdt);
+      this.fx.update(gdt);
     }
     this.updateCamera(dt);
     this.renderer.render(this.scene, this.camera);
@@ -456,8 +522,15 @@ export class Game {
     if (k.has('d') || k.has('arrowright')) x += 1;
     const len = Math.hypot(x, z);
     t.inv -= dt;
+    this.dodge -= dt;
+    this.dashCd -= dt;
     t.moving = len > 0;
-    if (t.moving) {
+    if (this.dashT > 0) {
+      this.dashT -= dt;
+      t.pos.x += this.dashDir.x * DASH_SPEED * dt;
+      t.pos.z += this.dashDir.y * DASH_SPEED * dt;
+      if (Math.random() < 0.6) this.fx.spawn('wisp', t.pos.clone().setY(0.4), { size: 0.9, life: 0.35, grow: 0.6, color: 0xdddddd });
+    } else if (t.moving) {
       t.pos.x += (x / len) * TRAINER_SPEED * dt;
       t.pos.z += (z / len) * TRAINER_SPEED * dt;
       t.walk += dt * 12;
@@ -466,6 +539,28 @@ export class Game {
       this.turn(t.obj, this.aim.x - t.pos.x, this.aim.z - t.pos.z, dt, 8);
     }
     this.clampArena(t.pos);
+  }
+
+  private dash() {
+    if (this.state !== 'playing' || this.dashCd > 0) return;
+    const k = this.keys;
+    const x = (k.has('d') || k.has('arrowright') ? 1 : 0) - (k.has('a') || k.has('arrowleft') ? 1 : 0);
+    const z = (k.has('s') || k.has('arrowdown') ? 1 : 0) - (k.has('w') || k.has('arrowup') ? 1 : 0);
+    if (x || z) this.dashDir.set(x, z);
+    else this.dashDir.set(this.aim.x - this.trainer.pos.x, this.aim.z - this.trainer.pos.z);
+    if (this.dashDir.lengthSq() < 1e-6) this.dashDir.set(0, 1);
+    this.dashDir.normalize();
+    this.dashT = DASH_TIME;
+    this.dashCd = DASH_CD;
+    this.dodge = DASH_TIME + 0.12; // i-frames
+    audio.dash();
+  }
+
+  private setFocus(m: Mon | null) {
+    if (this.state !== 'playing') return;
+    this.focus = m && m !== this.focus ? m : null;
+    if (this.focus) for (const p of this.party) p.target = this.focus;
+    audio.ui();
   }
 
   private updateAim() {
@@ -512,9 +607,10 @@ export class Game {
 
   private spawnWild(boss: boolean) {
     const pool = SPECIES.filter((s) => s.minRound <= this.round);
-    const sp = pick(pool);
+    const sp = weightedPick(pool, (s) => (this.biome.types.includes(s.type) ? 4 : 1));
     const level = Math.max(2, Math.round(this.round * 1.4) + Math.floor(Math.random() * 2)) + (boss ? 3 : 0);
-    const m = new Mon(sp, level, 'wild', boss);
+    const shiny = Math.random() < SHINY_ODDS;
+    const m = new Mon(sp, level, 'wild', boss, shiny);
     const tp = this.trainer.pos;
     let x = 0, z = 0;
     for (let i = 0; i < 20; i++) {
@@ -528,6 +624,12 @@ export class Game {
     this.scene.add(m.obj);
     this.wilds.push(m);
     this.fx.spawn('shine', m.pos.clone().setY(0.6), { size: 1.2, life: 0.4, grow: 0.8 });
+    if (shiny) {
+      this.fx.sparkle(mid(m), 10, 0.5);
+      audio.shiny();
+      this.ui.toast(`✦ A shiny ${sp.name} appeared!`, 'warn');
+      this.hint('shiny', 'Shiny Pokémon are rare — follow the blue arrow and catch it before your team KOs it (F holds fire).');
+    }
     if (!boss && !this.criedThisRound.has(sp.id)) {
       this.criedThisRound.add(sp.id);
       void audio.cry(sp.id, 0.3);
@@ -542,7 +644,9 @@ export class Game {
     m.moving = false;
     if (m.evolveTo) return; // mid-evolution: rooted and untargetable
     const tp = this.trainer.pos;
+    if (this.focus && !this.valid(this.focus)) this.focus = null;
     if (this.hold) m.target = null;
+    else if (this.focus && distXZ(this.focus.pos, tp) < 16) m.target = this.focus;
     else {
       if (m.target && (!this.valid(m.target) || distXZ(m.target.pos, tp) > 15)) m.target = null;
       m.retarget -= dt;
@@ -563,12 +667,67 @@ export class Game {
     if (m.grow < 1) return;
     m.cd -= dt;
     m.moving = false;
+    if (m.boss) {
+      if (m.slamT > 0) return this.updateSlam(m, dt);
+      m.slamCd -= dt;
+      if (m.slamCd <= 0 && m.target && distXZ(m.target.pos, m.pos) < SLAM_R + 1) return this.startSlam(m);
+    }
     m.retarget -= dt;
     if (!m.target || !this.valid(m.target) || m.retarget <= 0) {
       m.retarget = 1 + Math.random();
       m.target = this.nearest<Unit>(m.pos, [...this.party.filter((p) => p.alive), this.trainer]);
     }
     if (m.target) this.engage(m, m.target, dt, m.sp.speed * (m.boss ? 0.75 : 0.8));
+  }
+
+  /** Alpha signature: a telegraphed ground slam. The red disc fills up — dash out before it lands. */
+  private startSlam(m: Mon) {
+    m.slamT = SLAM_WIND;
+    const g = new THREE.Group();
+    const mat = (o: number) => new THREE.MeshBasicMaterial({ color: 0xff3b30, transparent: true, opacity: o, depthWrite: false });
+    const fill = new THREE.Mesh(new THREE.CircleGeometry(1, 48), mat(0.35));
+    const edge = new THREE.Mesh(new THREE.RingGeometry(SLAM_R - 0.12, SLAM_R, 64), mat(0.9));
+    for (const d of [fill, edge]) d.rotation.x = -Math.PI / 2;
+    g.add(fill, edge);
+    g.position.set(m.pos.x, 0.05, m.pos.z);
+    this.scene.add(g);
+    this.slams.set(m, g);
+    audio.slamWarn();
+    this.hint('slam', 'Alpha slam! Get out of the red circle — Shift dashes and makes you briefly invulnerable.');
+  }
+
+  private updateSlam(m: Mon, dt: number) {
+    m.slamT -= dt;
+    const g = this.slams.get(m)!;
+    const p = 1 - Math.max(0, m.slamT) / SLAM_WIND;
+    g.children[0].scale.setScalar(Math.max(0.01, SLAM_R * p));
+    m.flash = m.slamT < 0.25 ? 0.05 : 0;
+    if (m.slamT > 0) return;
+    this.clearSlam(m);
+    m.slamCd = rand(5, 7.5);
+    const atk = this.atkOf(m) * 1.8;
+    for (const u of [...this.party.filter((p) => p.alive), this.trainer]) {
+      if (distXZ(u.pos, m.pos) > SLAM_R + u.radius) continue;
+      const mult = u instanceof Mon ? typeMult(m.sp.move.type, u.sp.type) || 0.5 : 1;
+      this.hit(u, Math.round(atk * mult * (u instanceof Trainer ? 0.6 : 0.8)), mult, m.pos, 1.4);
+    }
+    this.shake = Math.max(this.shake, 0.7);
+    this.fx.spawn('impact', m.pos.clone().setY(0.3), { size: SLAM_R * 1.8, life: 0.35, grow: 0.3 });
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      this.fx.spawn(pick(['rock1', 'rock2', 'rock3']), m.pos.clone().setY(0.4), {
+        size: 0.6, life: 0.6, spin: 8, gravity: 14, vel: new THREE.Vector3(Math.cos(a) * 5, 5, Math.sin(a) * 5),
+      });
+    }
+    audio.slam();
+  }
+
+  private clearSlam(m: Mon) {
+    const g = this.slams.get(m);
+    if (!g) return;
+    disposeArena(g);
+    this.slams.delete(m);
+    m.slamT = 0;
   }
 
   private engage(m: Mon, t: Unit, dt: number, speed: number) {
@@ -659,19 +818,19 @@ export class Game {
           this.fx.spawn(mv.fx, p, { size: mv.size, life: 0.22, rotation: rand(-0.5, 0.5), color: 0xffffaa });
         }
         this.fx.spawn('electroball', to, { size: mv.size, life: 0.3, grow: 0.6 });
-        this.hit(t, dmg, mult);
+        this.hit(t, dmg, mult, m.pos, 0.2);
         break;
       }
       case 'melee': {
         m.lunge = 0.25;
         m.lungeDir.set(t.pos.x - m.pos.x, t.pos.z - m.pos.z).normalize();
         this.fx.spawn(mv.fx, mid(t), { size: mv.size, life: 0.3, grow: 0.3, rotation: rand(-0.3, 0.3) });
-        this.hit(t, dmg, mult);
+        this.hit(t, dmg, mult, m.pos, 0.45);
         break;
       }
       case 'burst':
         this.fx.spawn(mv.fx, mid(t), { size: mv.size * 0.4, life: 0.45, grow: 1.6 });
-        this.hit(t, dmg, mult);
+        this.hit(t, dmg, mult, m.pos, 0.2);
         break;
     }
   }
@@ -701,7 +860,7 @@ export class Game {
       if (f < 1) return true;
       if (p.real) {
         this.fx.spawn('impact', p.sprite.position, { size: 0.6, life: 0.15, grow: 0.4 });
-        this.hit(p.target, p.dmg, p.mult);
+        this.hit(p.target, p.dmg, p.mult, p.start, 0.2);
       }
       this.dropSprite(p.sprite);
       return false;
@@ -713,11 +872,13 @@ export class Game {
     s.material.dispose();
   }
 
-  private hit(t: Unit, dmg: number, mult: number) {
+  private hit(t: Unit, dmg: number, mult: number, from?: THREE.Vector3, knock = 0) {
     if (t instanceof Trainer) {
-      if (t.inv > 0 || this.state !== 'playing') return;
+      if (t.inv > 0 || this.dodge > 0 || this.state !== 'playing') return;
       t.hp -= dmg;
       t.inv = 0.35;
+      this.knockback(t, from, knock);
+      this.shake = Math.max(this.shake, 0.25);
       this.ui.hurt();
       audio.hurt();
       this.floater(t.pos, 2.1, `-${dmg}`, '#ff5a5a');
@@ -735,6 +896,8 @@ export class Game {
     }
     t.hp -= dmg;
     t.flash = 0.1;
+    this.knockback(t, from, knock * (t.boss ? 0.2 : 1));
+    if (mult > 1 && t.side === 'wild' && this.hitStopCd <= 0) (this.hitStop = 0.05), (this.hitStopCd = 0.3);
     if (t.side === 'party') t.hurtT = 0.3;
     else {
       // Numbers only for damage you deal; your own team's health lives on the party cards.
@@ -749,6 +912,14 @@ export class Game {
       t.hp = 0;
       this.faint(t);
     }
+  }
+
+  private knockback(t: Unit, from: THREE.Vector3 | undefined, k: number) {
+    if (!from || !k) return;
+    const dx = t.pos.x - from.x, dz = t.pos.z - from.z, d = Math.hypot(dx, dz) || 1;
+    t.pos.x += (dx / d) * k;
+    t.pos.z += (dz / d) * k;
+    this.clampArena(t.pos);
   }
 
   private faint(m: Mon) {
@@ -811,6 +982,7 @@ export class Game {
     const old = m.sp.name;
     m.showDex(null);
     m.setSpecies(m.evolveTo!);
+    register(m.sp.id, m.shiny);
     m.evolveTo = null;
     m.flash = 0.25;
     this.fx.sparkle(mid(m), 12, 0.6);
@@ -936,7 +1108,8 @@ export class Game {
     audio.caught();
     audio.duck(1600);
     setTimeout(() => void audio.cry(w.sp.id, 0.6), 900);
-    const nm = new Mon(w.sp, w.level, 'party');
+    const nm = new Mon(w.sp, w.level, 'party', false, w.shiny);
+    if (register(w.sp.id, w.shiny)) setTimeout(() => this.ui.toast(`New Pokédex entry: ${w.sp.name}!`, 'info'), 700);
     nm.hp = Math.round(nm.maxHp * Math.max(0.5, w.hp / w.maxHp));
     nm.pos.copy(at).setY(0);
     if (this.party.length < PARTY_MAX) this.addToParty(nm);
@@ -960,7 +1133,7 @@ export class Game {
       [
         ...this.party.map((p, i) => ({
           title: `Release ${p.sp.name}`,
-          icon: icon(url.front(p.sp.dex)),
+          icon: icon(url.front(p.sp.dex, p.shiny)),
           tag: p.sp.type,
           tagColor: hex(TYPE_COLOR[p.sp.type]),
           body: `Lv${p.level} · ${p.fainted ? 'Fainted' : `${Math.ceil(p.hp)}/${p.maxHp} HP`}`,
@@ -973,7 +1146,7 @@ export class Game {
             resume();
           },
         })),
-        { title: `Let ${nm.sp.name} go`, icon: icon(url.front(nm.sp.dex)), body: 'Keep your current team.', ghost: true, onClick: () => (nm.dispose(), resume()) },
+        { title: `Let ${nm.sp.name} go`, icon: icon(url.front(nm.sp.dex, nm.shiny)), body: 'Keep your current team.', ghost: true, onClick: () => (nm.dispose(), resume()) },
       ],
     );
   }
@@ -982,6 +1155,14 @@ export class Game {
 
   private animate(dt: number) {
     weakRingMat.opacity = 0.45 + 0.35 * Math.sin(this.time * 8);
+    for (const m of this.slams.keys()) if (!this.wilds.includes(m) || m.capturing) this.clearSlam(m);
+    const f = this.focus && this.valid(this.focus) ? this.focus : null;
+    this.focusRing.visible = !!f;
+    if (f) {
+      this.focusRing.position.set(f.pos.x, 0.06, f.pos.z);
+      this.focusRing.scale.setScalar(Math.max(1, f.radius * 1.8));
+      this.focusRing.rotation.z += dt * 2;
+    }
     for (const m of this.party) this.animateMon(m, dt);
     for (const m of this.wilds) this.animateMon(m, dt);
     this.dying = this.dying.filter((m) => {
@@ -1061,6 +1242,9 @@ export class Game {
       m.alphaIcon.position.set(-0.78, top + 0.25, 0); // badge beside the HP bar
       m.alphaIcon.visible = m.alive;
     }
+    if (m.shiny && m.alive && Math.random() < dt * 2.5) {
+      this.fx.spawn('shine', mid(m).add(new THREE.Vector3(rand(-0.5, 0.5), rand(0, 0.6), 0)), { size: 0.3, life: 0.5, grow: -0.6 });
+    }
     const weak = m.side === 'wild' && m.alive && m.hp / m.maxHp < WEAK;
     m.ring.visible = weak;
     if (weak) this.hint('weak', 'Weak wild Pokémon get a yellow ring — click one to throw a Poké Ball!');
@@ -1132,7 +1316,7 @@ export class Game {
         x: ((x * 0.95 + 1) / 2) * innerWidth,
         y: ((1 - y * 0.9) / 2) * innerHeight,
         angle: Math.atan2(-y, x),
-        kind: w.boss ? 'alpha' : w.hp / w.maxHp < WEAK ? 'weak' : 'wild',
+        kind: w.boss ? 'alpha' : w.shiny ? 'shiny' : w.hp / w.maxHp < WEAK ? 'weak' : 'wild',
       });
     }
     return out;
@@ -1143,6 +1327,10 @@ export class Game {
     const look = this.camFocus.clone().add(CAM_LEAD);
     this.camera.position.copy(look).add(CAM_OFFSET);
     this.camera.lookAt(look);
+    if (this.shake > 0.01) {
+      this.camera.position.add(new THREE.Vector3(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(this.shake * 0.35));
+      this.shake *= Math.exp(-7 * dt);
+    }
     this.sun.position.copy(this.camFocus).add(SUN_OFFSET);
     this.sun.target.position.copy(this.camFocus);
   }
@@ -1156,11 +1344,14 @@ export class Game {
       maxHp: this.trainer.maxHp,
       hold: this.hold,
       muted: audio.muted,
+      dash: clamp(1 - this.dashCd / DASH_CD, 0, 1),
+      focus: this.focus && this.valid(this.focus) ? this.focus.sp.name : undefined,
     });
     this.ui.setParty(
       this.party.map((p) => ({
         name: p.sp.name,
-        icon: icon(url.front(p.sp.dex)),
+        icon: icon(url.front(p.sp.dex, p.shiny)),
+        shiny: p.shiny,
         level: p.level,
         move: p.sp.move.name,
         color: hex(TYPE_COLOR[p.sp.move.type]),

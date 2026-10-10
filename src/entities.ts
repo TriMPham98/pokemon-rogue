@@ -60,6 +60,8 @@ export class Mon {
   moving = false;
   anim = Math.random() * 10;
   target: Unit | null = null;
+  slamCd = 4; // Alpha ground-slam cooldown
+  slamT = 0; // >0 while winding up a slam
   evolveTo: Species | null = null;
   evolving = 0; // seconds left in the evolution sequence
   evoFlicker = 0; // drives the old/new silhouette swap
@@ -82,7 +84,7 @@ export class Mon {
   readonly ring = new THREE.Mesh(ringGeo, weakRingMat);
   readonly alphaIcon?: THREE.Sprite;
 
-  constructor(public sp: Species, public level: number, readonly side: Side, readonly boss = false) {
+  constructor(public sp: Species, public level: number, readonly side: Side, readonly boss = false, readonly shiny = false) {
     this.sprite = new THREE.Sprite(this.mat);
     this.sprite.center.set(0.5, 0);
     this.shadow.rotation.x = -Math.PI / 2;
@@ -121,7 +123,7 @@ export class Mon {
     this.sp = sp;
     this.recalc();
     this.hp = Math.round(this.maxHp * frac);
-    const f = getTex(url.front(sp.dex));
+    const f = getTex(url.front(sp.dex, this.shiny));
     const k = PX * (this.boss ? 1.6 : 1);
     this.w = f.w * k;
     this.h = f.h * k;
@@ -155,7 +157,7 @@ export class Mon {
 
   private applyView() {
     const dex = this.viewDex ?? this.sp.dex;
-    const src = this.back ? url.back(dex) : url.front(dex);
+    const src = this.back ? url.back(dex, this.shiny) : url.front(dex, this.shiny);
     const st = getTex(src);
     const tex = this.white ? silhouette(src) : st.tex;
     if (this.mat.map !== tex) {

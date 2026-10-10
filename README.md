@@ -26,6 +26,8 @@ doesn't redistribute them — fine for a personal prototype, not for a public re
 | WASD / arrows | Move the trainer |
 | Mouse | Aim (hovering a wild Pokémon locks on) |
 | Click / Space | Throw a Poké Ball |
+| Right-click / E | Focus the whole team on a wild Pokémon (again to clear) |
+| Shift | Dash (brief invulnerability, 1.4s cooldown) |
 | F | Toggle party between attacking and holding fire (to set up catches) |
 | Esc / P | Pause |
 | M | Mute |
@@ -40,7 +42,13 @@ doesn't redistribute them — fine for a personal prototype, not for a public re
     and Alpha rounds always offer one. Eevee lets you choose Vaporeon, Jolteon or Flareon.
   - party cards show a purple level badge or stone icon for how each Pokémon evolves next
 - Clearing a round gives +2 Poké Balls, a 25% heal, and 1 of 3 item rewards.
-- Every 5th round an Alpha shows up (big, tough, hard to catch, its own music).
+- Every 5th round an Alpha shows up (big, tough, hard to catch, its own music). Alphas telegraph a ground
+  slam with a filling red circle — dash out.
+- Every 5 rounds you move to a new area (Route 1 → Viridian Forest → Rock Tunnel → Cerulean Cape →
+  Cinnabar Volcano, then loop), each with its own look, music and favoured Pokémon types.
+- 1 in 64 wild Pokémon are shiny (sparkles, chime, blue off-screen arrow). Shininess survives catching and evolving.
+- Progress persists between runs in localStorage: best round, Pokédex, shinies. Catching Pikachu or Eevee,
+  or reaching round 15, unlocks extra starters.
 - The run ends if the trainer's HP hits 0 or your whole party faints.
 
 ## Code map
@@ -50,7 +58,9 @@ doesn't redistribute them — fine for a personal prototype, not for a public re
 - `src/audio.ts` – cries, music, synthesized SFX
 - `src/fx.ts` – billboard move/impact effects
 - `src/entities.ts` – `Mon` (sprite billboard), `Trainer`, HP bars
-- `src/models.ts` – 3D trainer and arena
+- `src/models.ts` – 3D trainer and shared geometry
+- `src/biomes.ts` – areas and their arenas
+- `src/progress.ts` – saved meta-progression and starter unlocks
 - `src/game.ts` – game loop, AI, combat, catching, rounds, rewards, hints
 - `src/ui.ts` / `src/style.css` – HUD, party panel, modals, off-screen arrows
 - `scripts/fetch-assets.ts` – asset downloader

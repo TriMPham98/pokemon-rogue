@@ -13,7 +13,7 @@ export const GEO = {
 
 type V3 = [number, number, number];
 
-function mesh(geo: THREE.BufferGeometry, mat: THREE.Material, pos: V3, scale: V3 | number, rot?: V3) {
+export function mesh(geo: THREE.BufferGeometry, mat: THREE.Material, pos: V3, scale: V3 | number, rot?: V3) {
   const m = new THREE.Mesh(geo, mat);
   m.position.set(...pos);
   if (typeof scale === 'number') m.scale.setScalar(scale);
@@ -61,86 +61,4 @@ export function buildTrainer() {
   root.add(mesh(GEO.cyl, red, [0, 1.71, 0.2], [0.2, 0.025, 0.16]));
   root.add(mesh(GEO.box, white, [0, 1.84, 0.21], [0.14, 0.1, 0.04], [-0.5, 0, 0]));
   return { root, legs, arms };
-}
-
-export function buildArena() {
-  const g = new THREE.Group();
-  const rnd = (a: number, b: number) => a + Math.random() * (b - a);
-
-  const ground = new THREE.Mesh(new THREE.CircleGeometry(80, 48), new THREE.MeshToonMaterial({ color: 0x6fb85a }));
-  ground.rotation.x = -Math.PI / 2;
-  ground.receiveShadow = true;
-  g.add(ground);
-
-  const floor = new THREE.Mesh(new THREE.CircleGeometry(ARENA_R, 64), new THREE.MeshToonMaterial({ color: 0x92d47a }));
-  floor.rotation.x = -Math.PI / 2;
-  floor.position.y = 0.01;
-  floor.receiveShadow = true;
-  g.add(floor);
-
-  const edge = new THREE.Mesh(new THREE.RingGeometry(ARENA_R, ARENA_R + 0.5, 96), new THREE.MeshToonMaterial({ color: 0xe9dca4 }));
-  edge.rotation.x = -Math.PI / 2;
-  edge.position.y = 0.02;
-  g.add(edge);
-
-  // Grass tufts
-  const tufts = new THREE.InstancedMesh(GEO.cone, new THREE.MeshToonMaterial({ color: 0x4f9a3e }), 500);
-  const d = new THREE.Object3D();
-  for (let i = 0; i < tufts.count; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const r = i < 30 ? Math.sqrt(Math.random()) * ARENA_R : rnd(ARENA_R + 1, ARENA_R + 22);
-    const h = rnd(0.25, 0.55);
-    d.position.set(Math.cos(a) * r, h / 2, Math.sin(a) * r);
-    d.scale.set(0.07, h, 0.07);
-    d.rotation.set(rnd(-0.2, 0.2), 0, rnd(-0.2, 0.2));
-    d.updateMatrix();
-    tufts.setMatrixAt(i, d.matrix);
-  }
-  g.add(tufts);
-
-  // Flowers
-  const flowers = new THREE.InstancedMesh(GEO.sphere, new THREE.MeshToonMaterial({ color: 0xffffff }), 160);
-  const palette = [0xffffff, 0xffd84a, 0xff7aa8, 0xb88cff];
-  const col = new THREE.Color();
-  for (let i = 0; i < flowers.count; i++) {
-    const a = Math.random() * Math.PI * 2, r = rnd(ARENA_R + 1, ARENA_R + 12);
-    d.position.set(Math.cos(a) * r, 0.08, Math.sin(a) * r);
-    d.scale.setScalar(0.07);
-    d.rotation.set(0, 0, 0);
-    d.updateMatrix();
-    flowers.setMatrixAt(i, d.matrix);
-    flowers.setColorAt(i, col.setHex(palette[i % palette.length]));
-  }
-  g.add(flowers);
-
-  // Tree ring
-  const trunk = new THREE.MeshToonMaterial({ color: 0x7a5232 });
-  const leaves = [new THREE.MeshToonMaterial({ color: 0x2f7d40 }), new THREE.MeshToonMaterial({ color: 0x3d9650 })];
-  for (let i = 0; i < 70; i++) {
-    const a = (i / 70) * Math.PI * 2 + rnd(-0.04, 0.04);
-    const r = ARENA_R + rnd(3, 16);
-    const s = rnd(0.8, 1.5);
-    const tree = new THREE.Group();
-    tree.position.set(Math.cos(a) * r, 0, Math.sin(a) * r);
-    tree.scale.setScalar(s);
-    tree.add(mesh(GEO.cyl, trunk, [0, 0.8, 0], [0.22, 1.6, 0.22]));
-    tree.add(mesh(GEO.cone, leaves[i % 2], [0, 2.3, 0], [1.3, 2.2, 1.3]));
-    tree.add(mesh(GEO.cone, leaves[(i + 1) % 2], [0, 3.4, 0], [0.95, 1.8, 0.95]));
-    g.add(tree);
-  }
-
-  // Rocks
-  const rockMat = new THREE.MeshToonMaterial({ color: 0x9a9a92 });
-  const rockGeo = new THREE.DodecahedronGeometry(1, 0);
-  for (let i = 0; i < 14; i++) {
-    const a = Math.random() * Math.PI * 2, r = rnd(ARENA_R - 2, ARENA_R + 8);
-    const s = rnd(0.25, 0.6);
-    const rock = new THREE.Mesh(rockGeo, rockMat);
-    rock.position.set(Math.cos(a) * r, s * 0.3, Math.sin(a) * r);
-    rock.scale.set(s, s * 0.6, s);
-    rock.rotation.set(Math.random(), Math.random(), Math.random());
-    rock.castShadow = rock.receiveShadow = true;
-    g.add(rock);
-  }
-  return g;
 }

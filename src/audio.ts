@@ -229,6 +229,19 @@ class AudioEngine {
     this.tone(110, 55, 1, 'sawtooth', 0.08);
     this.noise(1, 200, 60, 0.18, 'lowpass');
   }
+  dash() {
+    this.noise(0.18, 400, 2000, 0.12);
+  }
+  shiny() {
+    [1568, 2093, 2637, 3136].forEach((f, i) => this.tone(f, f, 0.18, 'sine', 0.05, i * 0.07));
+  }
+  slamWarn() {
+    this.tone(70, 110, 1.1, 'sawtooth', 0.05);
+  }
+  slam() {
+    this.noise(0.6, 600, 60, 0.35, 'lowpass');
+    this.tone(90, 40, 0.5, 'square', 0.1);
+  }
   ui() {
     this.tone(880, 880, 0.05, 'square', 0.04);
   }

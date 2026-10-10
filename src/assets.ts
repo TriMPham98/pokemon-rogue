@@ -4,8 +4,8 @@ import * as THREE from 'three';
 const BASE = `${import.meta.env.BASE_URL}assets`;
 
 export const url = {
-  front: (dex: number) => `${BASE}/sprites/front/${dex}.png`,
-  back: (dex: number) => `${BASE}/sprites/back/${dex}.png`,
+  front: (dex: number, shiny = false) => `${BASE}/sprites/front/${shiny ? 'shiny/' : ''}${dex}.png`,
+  back: (dex: number, shiny = false) => `${BASE}/sprites/back/${shiny ? 'shiny/' : ''}${dex}.png`,
   fx: (name: string) => `${BASE}/fx/${name}.png`,
   item: (name: string) => `${BASE}/items/${name}.png`,
   cry: (id: string) => `${BASE}/cries/${id}.mp3`,

@@ -181,6 +181,9 @@ const BLURBS: Record<string, string> = {
   bulbasaur: 'Sturdy and steady. Razor Leaf from range — great against water and rock.',
   charmander: 'Hard-hitting Ember. Scorches grass types, evolves into a close-range brawler.',
   squirtle: 'Tanky shell, Water Gun stream. Douses fire and rock types.',
+  pikachu: 'Fast and fragile. Thunder Shock zaps from long range. Evolves with a Thunder Stone.',
+  eevee: 'Adaptable. Evolve it with any of three stones into the form your team needs.',
+  abra: 'Psychic powerhouse with paper-thin defenses.',
 };
 
 export const SPECIES: Species[] = ROWS.map(([id, name, dex, type, [hp, atk, speed, range, cooldown], move, minRound, catchRate, evos]) => ({
@@ -198,8 +201,14 @@ export const STARTERS = ['bulbasaur', 'charmander', 'squirtle'];
 export const ITEMS = ['poke-ball', 'great-ball', 'hyper-potion', 'max-revive', 'rare-candy', 'x-attack', 'focus-band', ...Object.keys(STONE_NAME)];
 
 /** Battle-fx sprites used outside of moves. */
-export const FX_EXTRA = ['impact', 'shine', 'alpha', 'electroball'];
+export const FX_EXTRA = ['impact', 'shine', 'alpha', 'electroball', 'wisp'];
 
-export const MUSIC = { battle: 'hgss-kanto-trainer', boss: 'bw2-kanto-gym-leader' };
+export const MUSIC = {
+  boss: 'bw2-kanto-gym-leader',
+  areas: ['hgss-kanto-trainer', 'bw-trainer', 'dpp-trainer', 'oras-trainer', 'xy-trainer'], // one per biome
+};
+
+/** Odds of a wild Pokémon being shiny. Much kinder than the real games, so a run can actually find one. */
+export const SHINY_ODDS = 1 / 64;
 
 export const hex = (c: number) => '#' + c.toString(16).padStart(6, '0');

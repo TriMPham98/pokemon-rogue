@@ -5,6 +5,7 @@ export interface CardSpec {
   tagColor?: string;
   icon?: string; // image URL
   ghost?: boolean;
+  locked?: boolean;
   onClick: () => void;
 }
 
@@ -16,6 +17,8 @@ export interface HudState {
   maxHp: number;
   hold: boolean;
   muted: boolean;
+  dash: number; // 0..1, 1 = ready
+  focus?: string;
 }
 
 export interface PartyEntry {
@@ -32,13 +35,14 @@ export interface PartyEntry {
   evolving: boolean;
   evoLevel?: number;
   evoStones: string[];
+  shiny: boolean;
 }
 
 export interface Arrow {
   x: number;
   y: number;
   angle: number;
-  kind: 'wild' | 'weak' | 'alpha';
+  kind: 'wild' | 'weak' | 'alpha' | 'shiny';
 }
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -56,6 +60,8 @@ export class UI {
         <div class="pill" id="hud-balls"></div>
         <div class="pill trainer-hp">Trainer <div class="bar"><div id="hud-hp"></div></div><span id="hud-hp-text"></span></div>
         <div class="pill" id="hud-mode"></div>
+        <div class="pill dash" id="hud-dash"><span>Dash</span><div class="bar"><div id="hud-dash-bar"></div></div></div>
+        <div class="pill focus" id="hud-focus"></div>
       </div>
       <div class="party" id="party"></div>
       <div class="hint" id="hint"></div>
@@ -80,7 +86,13 @@ export class UI {
     const mode = $('hud-mode');
     mode.textContent = s.hold ? 'Holding fire' : 'Attacking';
     mode.className = `pill ${s.hold ? 'hold' : 'attack'}`;
-    $('help').textContent = `WASD move · Click throw · F hold fire · Esc pause · M ${s.muted ? 'unmute' : 'mute'}`;
+    const dash = $('hud-dash-bar');
+    dash.style.width = `${s.dash * 100}%`;
+    dash.style.background = s.dash >= 1 ? '#5ac8fa' : '#55607a';
+    const focus = $('hud-focus');
+    focus.style.display = s.focus ? 'flex' : 'none';
+    if (s.focus) focus.textContent = `◎ Focus: ${s.focus}`;
+    $('help').textContent = `WASD move · Shift dash · Click throw · Right-click focus · F hold fire · Esc pause · M ${s.muted ? 'unmute' : 'mute'}`;
   }
 
   setParty(list: PartyEntry[]) {
@@ -102,7 +114,7 @@ export class UI {
             ${p.evoStones.length ? `<span class="evo-stones" title="Evolves with a stone">${p.evoStones.map((s) => `<img src="${s}" alt="" />`).join('')}</span>` : ''}
           </div>
           <div class="mon-info">
-            <div class="mon-head"><b>${p.name}</b><span class="lv">Lv${p.level}</span></div>
+            <div class="mon-head"><b>${p.shiny ? '<span class="shiny">✦</span>' : ''}${p.name}</b><span class="lv">Lv${p.level}</span></div>
             <div class="bar"><div style="width:${pct}%;background:${col}"></div></div>
             <div class="mon-foot"><span><span class="dot" style="background:${p.color}"></span>${p.fainted ? 'Fainted' : p.move}</span><span>${Math.ceil(p.hp)}/${p.maxHp}</span></div>
             <div class="xp"><div style="width:${p.xpFrac * 100}%"></div></div>
@@ -121,7 +133,7 @@ export class UI {
     const choices = modal.querySelector('.choices')!;
     for (const c of cards) {
       const btn = document.createElement('button');
-      btn.className = `choice ${c.ghost ? 'ghost' : ''}`;
+      btn.className = `choice ${c.ghost ? 'ghost' : ''} ${c.locked ? 'locked' : ''}`;
       btn.innerHTML = `
         ${c.icon ? `<img class="icon" src="${c.icon}" alt="" />` : ''}
         <div class="title">${c.title}</div>
@@ -129,7 +141,7 @@ export class UI {
         ${c.body ? `<div class="body">${c.body}</div>` : ''}`;
       // Ignore clicks for a moment so a mid-combat throw click can't pick an option by accident.
       btn.disabled = true;
-      setTimeout(() => (btn.disabled = false), 450);
+      if (!c.locked) setTimeout(() => (btn.disabled = false), 450);
       btn.addEventListener('click', c.onClick);
       choices.appendChild(btn);
     }
