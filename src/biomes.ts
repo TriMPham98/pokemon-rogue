@@ -70,7 +70,7 @@ const AREAS: AreaDef[] = [
   {
     name: 'Route 1', deco: 'meadow', ground: 0x6fb85a, sky: 0xa8dcff, light: 1.6,
     art: { ground: GRASS, path: 'dirt', patches: ['tallGrass', 7], decals: [['flowers', 14]], props: [['pine', 7], ['cutTree', 3], ['routeSign', 1]], ring: [['pine', 80], ['hedge', 16]], fence: 'fencePost' },
-    wild: 'pidgey:5 rattata:5 spearow:3 nidoranf:2 nidoranm:2 mankey:2@2 pidgeotto:1@4 raticate:1@4',
+    wild: 'pidgey:5 rattata:5 spearow:3 mankey:2@2 nidoranf:2@3 nidoranm:2@3 pidgeotto:1@4 raticate:1@4',
   },
   {
     name: 'Viridian Forest', deco: 'forest', ground: 0x2f6b34, sky: 0x86b89a, light: 1.3,

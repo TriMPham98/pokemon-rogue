@@ -247,6 +247,18 @@ export const STONE_NAME: Record<Stone, string> = {
   'moon-stone': 'Moon Stone',
 };
 
+/**
+ * The level a Pokémon must reach before its stone is offered: roughly where a FireRed playthrough first gets one.
+ * Moon Stones are found in Mt. Moon (party around Lv12); the others are sold at the Celadon Dept. Store (around Lv25).
+ */
+export const STONE_LEVEL: Record<Stone, number> = {
+  'moon-stone': 12,
+  'fire-stone': 25,
+  'water-stone': 25,
+  'thunder-stone': 25,
+  'leaf-stone': 25,
+};
+
 /** Evolves on reaching `level`, or when given `stone` (offered as a round reward). */
 export type Evo = { to: string; level: number; stone?: never } | { to: string; stone: Stone; level?: never };
 

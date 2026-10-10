@@ -63,6 +63,15 @@ class AudioEngine {
     }
   }
 
+  /** Freeze all sound while the tab is hidden; the music scheduler runs on ctx time, so it picks up where it left off. */
+  watchVisibility() {
+    document.addEventListener('visibilitychange', () => {
+      if (!this.ctx) return;
+      if (document.hidden) void this.ctx.suspend();
+      else void this.ctx.resume();
+    });
+  }
+
   toggleMute() {
     this.muted = !this.muted;
     try {

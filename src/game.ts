@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { type Species, EVOLVED, FX_ALL, ITEMS, MOVES, MUSIC, SHINY_ODDS, SPECIES, SPECIES_BY_ID, STARTERS, STONE_NAME, TRAINER_SHEET, STAT_KEYS, STAT_LABEL, TYPE_COLOR, expAt, hex, typeLabel, typeMultVs, type Evo, type Move, type MoveKind, type Status } from './data';
+import { type Species, EVOLVED, FX_ALL, ITEMS, MOVES, MUSIC, SHINY_ODDS, SPECIES, SPECIES_BY_ID, STARTERS, STONE_LEVEL, STONE_NAME, TRAINER_SHEET, STAT_KEYS, STAT_LABEL, TYPE_COLOR, expAt, hex, typeLabel, typeMultVs, type Evo, type Move, type MoveKind, type Status } from './data';
 import { LEADER_LEVELS, BALLS, calcStats, SLOW_TIME, STATUS_DOT, TRAP_TIME, catchChance, damage, WILD_TEMPO, EXP_SHARE_BENCH, expGain, wildLevel, wildPower, type BallKind, type Hit } from './battle';
 import { ARENA_R } from './models';
 import { BIOMES, ROUNDS_PER_AREA, areaRound, biomeFor, buildArena, disposeArena, sunFor, type Biome, type Solid, type Zone } from './biomes';
@@ -299,6 +299,7 @@ export class Game {
       if (this.state === 'playing') this.togglePause();
     });
     window.addEventListener('pointerdown', () => audio.unlock());
+    audio.watchVisibility();
     const el = this.renderer.domElement;
     el.addEventListener('pointermove', (e) => this.mouse.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1));
     el.addEventListener('pointerdown', (e) => {
@@ -492,7 +493,7 @@ export class Game {
   private stoneOffers() {
     return this.party
       .filter((p) => !p.fainted && !p.evolveTo)
-      .map((mon) => ({ mon, evos: (mon.sp.evos ?? []).filter((e) => e.stone) }))
+      .map((mon) => ({ mon, evos: (mon.sp.evos ?? []).filter((e) => e.stone && mon.level >= STONE_LEVEL[e.stone]) }))
       .filter((o) => o.evos.length);
   }
 
@@ -601,6 +602,8 @@ export class Game {
     this.hold = !this.hold;
     for (const p of this.party) p.target = null;
     audio.ui();
+    // The lead acknowledges the order: a low cry to stand down, a sharp one to attack.
+    if (this.active?.alive) void audio.cry(this.active.sp.id, 0.5, this.hold ? 0.85 : 1.1);
   }
 
   // ───────────────────────────── main loop ─────────────────────────────
@@ -1323,7 +1326,8 @@ export class Game {
       this.hint('switch', 'Only one Pokémon fights at a time. Switch with 1-6 (or click a party card).');
     }
     const stones = (m.sp.evos ?? []).filter((e) => e.stone).map((e) => STONE_NAME[e.stone!]);
-    if (stones.length) this.hint('stone', `${m.sp.name} evolves with a ${stones.join(' / ')} — watch for it in round rewards.`);
+    const from = Math.min(...(m.sp.evos ?? []).filter((e) => e.stone).map((e) => STONE_LEVEL[e.stone!]));
+    if (stones.length) this.hint('stone', `${m.sp.name} evolves with a ${stones.join(' / ')} — watch for it in round rewards from Lv${from}.`);
   }
 
   // ───────────────────────────── catching ─────────────────────────────
