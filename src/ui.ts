@@ -1,3 +1,8 @@
+export interface StatBar {
+  label: string;
+  value: number;
+}
+
 export interface CardSpec {
   title: string;
   body?: string;
@@ -6,25 +11,37 @@ export interface CardSpec {
   icon?: string; // image URL
   ghost?: boolean;
   locked?: boolean;
+  stats?: StatBar[]; // base-stat bars (starter picker)
   onClick: () => void;
 }
 
 export interface HudState {
+  area: string;
   round: number;
   remaining: number;
+  total: number; // wild Pokémon this round, for the progress bar
   balls: number;
+  ballName: string;
+  ballIcon: string;
   hp: number;
   maxHp: number;
+  slowed: boolean;
   hold: boolean;
   muted: boolean;
   dash: number; // 0..1, 1 = ready
   focus?: string;
 }
 
+export interface TypeChip {
+  label: string;
+  color: string;
+}
+
 export interface PartyEntry {
   name: string;
   icon: string;
   level: number;
+  types: TypeChip[];
   move: string;
   color: string;
   hp: number;
@@ -36,18 +53,37 @@ export interface PartyEntry {
   evoLevel?: number;
   evoStones: string[];
   shiny: boolean;
+  status?: TypeChip;
+}
+
+/** The wild Pokémon under the cursor: who it is, how hurt, and the odds of catching it right now. */
+export interface TargetInfo {
+  x: number;
+  y: number;
+  name: string;
+  level: number;
+  types: TypeChip[];
+  hpFrac: number;
+  status?: TypeChip;
+  catchPct: number;
+  leader: boolean;
+  shiny: boolean;
+  /** Best type matchup among your party's moves against it: 'good' if someone hits it super effectively. */
+  matchup?: 'good' | 'bad';
 }
 
 export interface Arrow {
   x: number;
   y: number;
   angle: number;
-  kind: 'wild' | 'weak' | 'alpha' | 'shiny';
+  kind: 'wild' | 'weak' | 'leader' | 'shiny';
 }
 
 const $ = (id: string) => document.getElementById(id)!;
 const setText = (el: HTMLElement, text: string) => void (el.textContent !== text && (el.textContent = text));
 const setHtml = (el: HTMLElement & { _html?: string }, html: string) => void (el._html !== html && (el.innerHTML = el._html = html));
+const hpColor = (pct: number) => (pct > 50 ? 'var(--hp-good)' : pct > 25 ? 'var(--hp-mid)' : 'var(--hp-low)');
+const chip = (c: TypeChip, cls = 'type') => `<span class="${cls}" style="background:${c.color}">${c.label}</span>`;
 
 export class UI {
   private cards: { el: HTMLElement; key: '' | 'empty' | 'filled' }[] = [];
@@ -57,14 +93,25 @@ export class UI {
   constructor() {
     $('ui').innerHTML = `
       <div class="hud">
-        <div class="pill" id="hud-round"></div>
-        <div class="pill" id="hud-left"></div>
-        <div class="pill" id="hud-balls"></div>
-        <div class="pill trainer-hp">Trainer <div class="bar"><div id="hud-hp"></div></div><span id="hud-hp-text"></span></div>
-        <div class="pill" id="hud-mode"></div>
-        <div class="pill dash" id="hud-dash"><span>Dash</span><div class="bar"><div id="hud-dash-bar"></div></div></div>
-        <div class="pill focus" id="hud-focus"></div>
+        <div class="panel-glass run-panel">
+          <div class="status-head"><span class="area" id="hud-area"></span><span class="round" id="hud-round"></span></div>
+          <div class="progress"><div id="hud-progress"></div></div>
+          <div class="status-sub" id="hud-left"></div>
+          <div class="trainer-hp">
+            <span class="label">Trainer</span>
+            <div class="bar"><div id="hud-hp"></div></div>
+            <span class="num" id="hud-hp-text"></span>
+          </div>
+        </div>
+        <div class="chips">
+          <div class="chip" id="hud-balls"><img id="hud-ball-icon" alt="" /><b id="hud-ball-count"></b><span id="hud-ball-name"></span></div>
+          <div class="chip" id="hud-mode"></div>
+          <div class="chip dash" id="hud-dash"><span>Dash</span><div class="bar"><div id="hud-dash-bar"></div></div></div>
+          <div class="chip focus" id="hud-focus"></div>
+          <div class="chip slowed" id="hud-slow">Slowed</div>
+        </div>
       </div>
+      <div class="target" id="target"></div>
       <div class="party" id="party"></div>
       <div class="hint" id="hint"></div>
       <div class="help" id="help"></div>
@@ -77,24 +124,56 @@ export class UI {
   }
 
   setHud(s: HudState) {
-    $('hud-round').textContent = `Round ${s.round}`;
-    $('hud-left').textContent = `Wild left: ${s.remaining}`;
-    $('hud-balls').innerHTML = `<span class="ball-icon"></span> × ${s.balls}`;
+    setText($('hud-area'), s.area);
+    setText($('hud-round'), `Round ${s.round}`);
+    $('hud-progress').style.width = `${s.total ? (1 - s.remaining / s.total) * 100 : 0}%`;
+    setText($('hud-left'), s.remaining ? `${s.remaining} wild Pokémon left` : 'Area clear');
+    const ball = $('hud-ball-icon') as HTMLImageElement;
+    if (ball.getAttribute('src') !== s.ballIcon) ball.src = s.ballIcon;
+    setText($('hud-ball-count'), `×${s.balls}`);
+    setText($('hud-ball-name'), s.ballName);
+    $('hud-balls').classList.toggle('empty', s.balls === 0);
     const pct = (s.hp / s.maxHp) * 100;
     const hp = $('hud-hp');
     hp.style.width = `${pct}%`;
-    hp.style.background = pct > 50 ? '#4cd964' : pct > 25 ? '#ffcc00' : '#ff3b30';
-    $('hud-hp-text').textContent = `${Math.ceil(s.hp)}/${s.maxHp}`;
+    hp.style.background = hpColor(pct);
+    setText($('hud-hp-text'), `${Math.ceil(s.hp)}/${s.maxHp}`);
     const mode = $('hud-mode');
-    mode.textContent = s.hold ? 'Holding fire' : 'Attacking';
-    mode.className = `pill ${s.hold ? 'hold' : 'attack'}`;
+    setText(mode, s.hold ? '✋ Holding fire' : '⚔ Attacking');
+    mode.className = `chip ${s.hold ? 'hold' : 'attack'}`;
     const dash = $('hud-dash-bar');
     dash.style.width = `${s.dash * 100}%`;
-    dash.style.background = s.dash >= 1 ? '#5ac8fa' : '#55607a';
+    dash.style.background = s.dash >= 1 ? 'var(--accent)' : '#55607a';
     const focus = $('hud-focus');
     focus.style.display = s.focus ? 'flex' : 'none';
-    if (s.focus) focus.textContent = `◎ Focus: ${s.focus}`;
-    $('help').textContent = `WASD move · Shift dash · Click throw · Right-click focus · F hold fire · Esc pause · M ${s.muted ? 'unmute' : 'mute'}`;
+    if (s.focus) setText(focus, `◎ Focus: ${s.focus}`);
+    $('hud-slow').style.display = s.slowed ? 'flex' : 'none';
+    setHtml(
+      $('help'),
+      ['WASD move', 'Shift dash', 'Click throw', 'Right-click focus', 'F hold fire', 'Esc pause', `M ${s.muted ? 'unmute' : 'mute'}`]
+        .map((t) => {
+          const [k, ...rest] = t.split(' ');
+          return `<span><kbd>${k}</kbd>${rest.join(' ')}</span>`;
+        })
+        .join(''),
+    );
+  }
+
+  setTarget(t: TargetInfo | null) {
+    const el = $('target');
+    if (!t) return void (el.style.display = 'none');
+    el.style.display = 'block';
+    el.style.transform = `translate(${Math.round(t.x)}px, ${Math.round(t.y)}px) translate(-50%, -100%)`;
+    const pct = Math.max(0, t.hpFrac * 100);
+    setHtml(
+      el,
+      `<div class="t-head">${t.leader ? '<span class="leader">★</span>' : ''}${t.shiny ? '<span class="shiny">✦</span>' : ''}<b>${t.name}</b><span class="lv">Lv${t.level}</span></div>
+       <div class="t-types">${t.types.map((c) => chip(c)).join('')}${t.status ? chip(t.status, 'status') : ''}</div>
+       <div class="bar"><div style="width:${pct}%;background:${hpColor(pct)}"></div></div>
+       <div class="t-foot"><span class="catch ${t.catchPct >= 50 ? 'good' : t.catchPct >= 20 ? 'ok' : ''}">◓ ${t.catchPct}% catch</span>${
+         t.matchup === 'good' ? '<span class="se">Super effective</span>' : t.matchup === 'bad' ? '<span class="nve">Resists your team</span>' : ''
+       }</div>`,
+    );
   }
 
   /**
@@ -119,7 +198,8 @@ export class UI {
           <div class="mon-icon-wrap"><img class="mon-icon" alt="" /><span class="badges"></span></div>
           <div class="mon-info">
             <div class="mon-head"><b></b><span class="lv"></span></div>
-            <div class="bar"><div class="hp-fill"></div></div>
+            <div class="mon-types"></div>
+            <div class="bar hp"><div class="hp-fill"></div></div>
             <div class="mon-foot"><span><span class="dot"></span><span class="move"></span></span><span class="hp-text"></span></div>
             <div class="xp"><div></div></div>
           </div>`;
@@ -135,10 +215,11 @@ export class UI {
       );
       setHtml(q('.mon-head b'), `${p.shiny ? '<span class="shiny">✦</span>' : ''}${p.name}`);
       setText(q('.lv'), `Lv${p.level}`);
+      setHtml(q('.mon-types'), p.types.map((c) => chip(c)).join('') + (p.status && !p.fainted ? chip(p.status, 'status') : ''));
       const pct = Math.max(0, (p.hp / p.maxHp) * 100);
       const fill = q('.hp-fill');
       fill.style.width = `${pct}%`;
-      fill.style.background = pct > 50 ? '#4cd964' : pct > 25 ? '#ffcc00' : '#ff3b30';
+      fill.style.background = hpColor(pct);
       q('.dot').style.background = p.color;
       setText(q('.move'), p.fainted ? 'Fainted' : p.move);
       setText(q('.hp-text'), `${Math.ceil(p.hp)}/${p.maxHp}`);
@@ -148,9 +229,10 @@ export class UI {
     });
   }
 
-  showModal(title: string, subtitle: string, cards: CardSpec[]) {
+  /** `extra` is raw HTML placed between the subtitle and the choices (e.g. the party summary on pause). */
+  showModal(title: string, subtitle: string, cards: CardSpec[], extra = '') {
     const modal = $('modal');
-    modal.innerHTML = `<div class="panel"><h1>${title}</h1><p>${subtitle}</p><div class="choices"></div></div>`;
+    modal.innerHTML = `<div class="panel"><h1>${title}</h1><p>${subtitle}</p>${extra}<div class="choices"></div></div>`;
     const choices = modal.querySelector('.choices')!;
     for (const c of cards) {
       const btn = document.createElement('button');
@@ -159,7 +241,8 @@ export class UI {
         ${c.icon ? `<img class="icon" src="${c.icon}" alt="" />` : ''}
         <div class="title">${c.title}</div>
         ${c.tag ? `<div class="tag" style="background:${c.tagColor ?? '#666'}">${c.tag}</div>` : ''}
-        ${c.body ? `<div class="body">${c.body}</div>` : ''}`;
+        ${c.body ? `<div class="body">${c.body}</div>` : ''}
+        ${c.stats ? `<div class="stats">${c.stats.map((s) => statRow(s.label, s.value)).join('')}</div>` : ''}`;
       // Ignore clicks for a moment so a mid-combat throw click can't pick an option by accident.
       btn.disabled = true;
       if (!c.locked) setTimeout(() => (btn.disabled = false), 450);
@@ -233,4 +316,11 @@ export class UI {
       el.style.transform = `translate(${a.x}px, ${a.y}px) translate(-50%, -50%) rotate(${a.angle}rad)`;
     });
   }
+}
+
+/** One labelled stat bar; `max` fills it (150 for base stats: only a handful of Kanto stats go past it). */
+export function statRow(label: string, value: number, max = 150) {
+  const pct = Math.min(100, (value / max) * 100);
+  const hue = Math.round(Math.min(1, (value / max) * 1.15) * 130); // red → green
+  return `<div class="stat"><span>${label}</span><div class="sbar"><div style="width:${pct}%;background:hsl(${hue} 70% 52%)"></div></div><b>${value}</b></div>`;
 }

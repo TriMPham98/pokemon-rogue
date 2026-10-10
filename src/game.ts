@@ -1,13 +1,14 @@
 import * as THREE from 'three';
-import { type Species, FX_ALL, ITEMS, MOVES, MUSIC, SHINY_ODDS, SPECIES, SPECIES_BY_ID, STARTERS, STONE_NAME, TRAINER_SHEET, TYPE_COLOR, hex, typeLabel, typeMultVs, type Evo, type Move, type MoveKind } from './data';
+import { type Species, EVOLVED, FX_ALL, ITEMS, MOVES, MUSIC, SHINY_ODDS, SPECIES, SPECIES_BY_ID, STARTERS, STONE_NAME, TRAINER_SHEET, STAT_KEYS, STAT_LABEL, TYPE_COLOR, expAt, hex, typeLabel, typeMultVs, type Evo, type Move, type MoveKind, type Status } from './data';
+import { LEADER_LEVELS, BALLS, calcStats, SLOW_TIME, STATUS_DOT, TRAP_TIME, catchChance, damage, WILD_TEMPO, expGain, wildLevel, wildPower, type BallKind, type Hit } from './battle';
 import { ARENA_R } from './models';
-import { BIOMES, areaRound, biomeFor, buildArena, disposeArena, type Biome } from './biomes';
+import { BIOMES, ROUNDS_PER_AREA, areaRound, biomeFor, buildArena, disposeArena, sunFor, type Biome } from './biomes';
 import { UNLOCKS, finishRun, register, save } from './progress';
 import { ACT_FOLLOW, Mon, Trainer, weakRingMat, type Unit } from './entities';
 import { Effects } from './fx';
 import { audio } from './audio';
 import { icon, preload, url } from './assets';
-import { UI, type Arrow, type CardSpec } from './ui';
+import { UI, statRow, type Arrow, type CardSpec, type TypeChip } from './ui';
 
 type State = 'loading' | 'starter' | 'playing' | 'paused' | 'reward' | 'swap' | 'gameover';
 
@@ -19,8 +20,9 @@ interface Projectile {
   dur: number;
   arc: number;
   spin: number;
-  dmg: number;
-  mult: number;
+  hit: Hit;
+  src: Mon;
+  mv: Move;
   real: boolean; // the last sprite of a volley carries the damage; the rest are visual
 }
 
@@ -61,8 +63,6 @@ const WEAK = 0.35;
 const DASH_TIME = 0.18;
 const DASH_SPEED = 24;
 const DASH_CD = 1.4;
-const SLAM_R = 3.4;
-const SLAM_WIND = 1.2;
 
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 const pick = <T>(arr: T[]) => arr[Math.floor(Math.random() * arr.length)];
@@ -70,14 +70,21 @@ const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 const distXZ = (a: THREE.Vector3, b: THREE.Vector3) => Math.hypot(a.x - b.x, a.z - b.z);
 const easeOutBack = (x: number) => 1 + 2.7 * Math.pow(x - 1, 3) + 1.7 * Math.pow(x - 1, 2);
 const shuffle = <T>(arr: T[]) => arr.map((v) => [Math.random(), v] as const).sort((a, b) => a[0] - b[0]).map((p) => p[1]);
-const xpNeed = (level: number) => Math.round(level * level * 0.6);
 const EVOLVE_TIME = 2.6;
 const mid = (u: Unit) => u.pos.clone().setY(u.height * 0.5);
 /** Wind-up before each kind of move lands, long enough to read the attacker's animation. */
+/** Status condition labels and tints. */
+const STATUS_INFO: Record<Status, { label: string; verb: string; color: number; css: string }> = {
+  psn: { label: 'PSN', verb: 'was poisoned', color: 0xc070ff, css: '#b05ce0' },
+  brn: { label: 'BRN', verb: 'was burned', color: 0xff7040, css: '#ff7040' },
+  par: { label: 'PAR', verb: 'is paralyzed', color: 0xffe040, css: '#e8c020' },
+};
 const WIND: Record<MoveKind, number> = { melee: 0.18, shot: 0.14, spray: 0.14, drop: 0.3, beam: 0.3, bolt: 0.35, burst: 0.25, quake: 0.38 };
 /** Mew's Metronome draws from every other move. */
 const METRONOME = Object.values(MOVES).filter((m: Move) => m !== MOVES.metronome && m !== MOVES.transform);
 const easeOut = (x: number) => 1 - (1 - x) * (1 - x);
+const typeChips = (sp: Species): TypeChip[] =>
+  [sp.type, ...(sp.type2 ? [sp.type2] : [])].map((t) => ({ label: t.toUpperCase(), color: hex(TYPE_COLOR[t]) }));
 function weightedPick<T>(items: T[], weight: (t: T) => number) {
   let r = Math.random() * items.reduce((a, t) => a + weight(t), 0);
   for (const t of items) if ((r -= weight(t)) <= 0) return t;
@@ -119,8 +126,19 @@ const REWARDS: Reward[] = [
     },
   },
   {
-    title: 'Great Ball Upgrade', item: 'great-ball', desc: '+12% catch chance on every throw for the rest of the run.',
-    apply: (g) => (g.catchBonus += 0.12),
+    title: 'Great Balls', item: 'great-ball', desc: 'Upgrade every ball you throw to a Great Ball (1.5× catch rate).',
+    cond: (g) => g.ball === 'poke',
+    apply: (g) => (g.ball = 'great'),
+  },
+  {
+    title: 'Ultra Balls', item: 'ultra-ball', desc: 'Upgrade every ball you throw to an Ultra Ball (2× catch rate).',
+    cond: (g) => g.ball === 'great',
+    apply: (g) => (g.ball = 'ultra'),
+  },
+  {
+    title: 'Full Heal', item: 'full-heal', desc: 'Your Pokémon shrug off status for the rest of the run (no poison, burn or paralysis).',
+    cond: (g) => !g.statusImmune,
+    apply: (g) => (g.statusImmune = true),
   },
 ];
 
@@ -154,11 +172,13 @@ export class Game {
   private round = 0;
   private toSpawn = 0;
   private spawnTimer = 0;
-  private bossPending = false;
+  private leaderPending = false;
+  private roundTotal = 0;
   private criedThisRound = new Set<string>();
   pokeballs = 5;
   partyAtkMul = 1;
-  catchBonus = 0;
+  ball: BallKind = 'poke';
+  statusImmune = false;
   private hold = false;
   private caught = 0;
   private defeated = 0;
@@ -171,7 +191,6 @@ export class Game {
   private biome: Biome = BIOMES[0];
   private focus: Mon | null = null;
   private focusRing: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
-  private slams = new Map<Mon, THREE.Group>();
   private dashT = 0;
   private dashCd = 0;
   private dashDir = new THREE.Vector2();
@@ -316,9 +335,10 @@ export class Game {
           tag: `${typeLabel(sp)} · ${sp.move.name}`,
           tagColor: hex(TYPE_COLOR[sp.type]),
           body: sp.blurb,
+          stats: STAT_KEYS.map((k) => ({ label: STAT_LABEL[k], value: sp.base[k] })),
           onClick: () => {
             audio.unlock();
-            const m = new Mon(sp, 6, 'party');
+            const m = new Mon(sp, 5, 'party');
             m.pos.set(1.5, 0, 1.5);
             this.addToParty(m);
             register(sp.id);
@@ -338,31 +358,40 @@ export class Game {
     (this.scene.background as THREE.Color).setHex(b.sky);
     this.scene.fog!.color.setHex(b.sky);
     this.hemi.intensity = b.light;
+    const [sunColor, sunI] = sunFor(b);
+    this.sun.color.setHex(sunColor);
+    this.sun.intensity = sunI;
+    this.hemi.groundColor.setHex(b.ground).multiplyScalar(0.8);
     this.biome = b;
   }
 
   private startRound(n: number) {
     this.round = n;
     this.toSpawn = Math.min(26, 2 + n * 2);
-    this.bossPending = n % 5 === 0;
+    this.leaderPending = n % ROUNDS_PER_AREA === 0;
+    this.roundTotal = this.toSpawn + (this.leaderPending ? 1 : 0);
     this.spawnTimer = 1.5;
     this.criedThisRound.clear();
     const b = biomeFor(n);
     const newArea = b !== this.biome || n === 1;
     if (b !== this.biome) this.setBiome(b);
-    this.ui.banner(newArea ? b.name : `Round ${n}`, newArea ? `Round ${n} · a new area` : this.bossPending ? 'An Alpha lurks nearby…' : 'Wild Pokémon incoming!');
+    this.ui.banner(newArea ? b.name : `Round ${n}`, newArea ? `Round ${n} · a new area` : this.leaderPending ? 'Something stronger lurks nearby…' : 'Wild Pokémon incoming!');
     audio.roundStart();
-    audio.playMusic(this.bossPending ? MUSIC.boss : b.music);
+    audio.playMusic(b.music);
     if (n === 1) this.hint('move', 'Move with WASD — your Pokémon follow you and battle on their own.');
   }
 
   private endRound() {
     this.state = 'reward';
+    audio.jingle(MUSIC.victory, true);
     this.pokeballs += 2;
     for (const p of this.party) {
       p.act = null;
-      if (!p.fainted) p.hp = Math.min(p.maxHp, p.hp + p.maxHp * 0.25);
+      p.status = null;
+      p.trapT = p.slowT = 0;
+      if (!p.fainted) p.hp = Math.min(p.maxHp, p.hp + p.maxHp * 0.35);
     }
+    this.trainer.slowT = 0;
     this.trainer.hp = Math.min(this.trainer.maxHp, this.trainer.hp + 15);
     for (const p of this.projectiles) this.dropSprite(p.sprite);
     this.projectiles = [];
@@ -377,10 +406,10 @@ export class Game {
     const cards: CardSpec[] = shuffle(REWARDS.filter((r) => !r.cond || r.cond(this)))
       .slice(0, 3)
       .map((o) => ({ title: o.title, icon: icon(url.item(o.item)), body: o.desc, onClick: () => (o.apply(this), next()) }));
-    // Stones only show up when someone can use one; Alpha rounds always offer one.
+    // Stones only show up when someone can use one; an area's last round always offers one.
     const offers = this.stoneOffers();
-    const show = () => this.ui.showModal(`Round ${this.round} cleared!`, '+2 Poké Balls and your team recovered 25% HP. Pick a reward:', cards);
-    if (offers.length && (this.round % 5 === 0 || Math.random() < 0.5)) cards[0] = this.stoneCard(pick(offers), next, show);
+    const show = () => this.ui.showModal(`Round ${this.round} cleared!`, '+2 Poké Balls, status cured and 35% HP restored. Pick a reward:', cards);
+    if (offers.length && (this.round % ROUNDS_PER_AREA === 0 || Math.random() < 0.5)) cards[0] = this.stoneCard(pick(offers), next, show);
     show();
   }
 
@@ -462,10 +491,33 @@ export class Game {
     if (this.state !== 'playing') return;
     this.state = 'paused';
     this.keys.clear();
-    this.ui.showModal('Paused', 'Esc or P to resume · M toggles sound', [
-      { title: 'Resume', icon: icon(url.item('poke-ball')), onClick: () => this.togglePause() },
-      { title: 'Restart run', ghost: true, onClick: () => location.reload() },
-    ]);
+    this.ui.showModal(
+      'Paused',
+      `${this.biome.name} · Round ${this.round} · ${BALLS[this.ball].name}s${this.statusImmune ? ' · Full Heal' : ''}${this.partyAtkMul > 1 ? ` · X Attack +${Math.round((this.partyAtkMul - 1) * 100)}%` : ''}`,
+      [
+        { title: 'Resume', icon: icon(url.item(`${this.ball}-ball`)), onClick: () => this.togglePause() },
+        { title: 'Restart run', body: 'Abandon this run and pick a new partner.', ghost: true, onClick: () => location.reload() },
+      ],
+      this.partySummary(),
+    );
+  }
+
+  /** Pause-screen team sheet: real stats at the current level, with the move's power and category. */
+  private partySummary() {
+    if (!this.party.length) return '';
+    const rows = this.party.map((p) => {
+      // Bars are relative to a base-150, max-IV Pokémon of the same level.
+      const top = calcStats({ hp: 150, atk: 150, def: 150, spa: 150, spd: 150, spe: 150 }, { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 }, p.level);
+      const mv = p.sp.move;
+      const power = mv.fixed !== undefined ? (mv.fixed === 'level' ? `=Lv` : `=${mv.fixed}`) : mv.power || '—';
+      return `<div class="sheet-mon ${p.fainted ? 'fainted' : ''}">
+        <img src="${icon(url.front(p.sp.dex, p.shiny))}" alt="" />
+        <div class="sheet-id"><b>${p.shiny ? '<span class="shiny">✦</span>' : ''}${p.sp.name}</b><span>Lv${p.level} · ${typeChips(p.sp).map((c) => `<span class="type" style="background:${c.color}">${c.label}</span>`).join('')}</span>
+          <span class="sheet-move"><span class="dot" style="background:${hex(TYPE_COLOR[mv.type])}"></span>${mv.name} · ${mv.cat === 'physical' ? 'Phys' : 'Spec'} ${power}</span></div>
+        <div class="sheet-stats">${STAT_KEYS.map((k) => statRow(STAT_LABEL[k], k === 'hp' ? p.maxHp : p.stats[k], top[k])).join('')}</div>
+      </div>`;
+    });
+    return `<div class="sheet">${rows.join('')}</div>`;
   }
 
   private toggleHold() {
@@ -490,11 +542,13 @@ export class Game {
     if (active) {
       this.animate(gdt);
       this.fx.update(gdt);
+      this.arena?.userData.tick?.(this.time, gdt);
     }
     this.updateCamera(dt);
     this.renderer.render(this.scene, this.camera);
     this.updateFloaters(active ? dt : 0);
     this.ui.setArrows(this.state === 'playing' ? this.arrows() : []);
+    this.ui.setTarget(this.state === 'playing' ? this.targetInfo() : null);
     this.uiTimer -= dt;
     if (this.uiTimer <= 0) {
       this.uiTimer = 0.1;
@@ -507,14 +561,17 @@ export class Game {
     this.updateTrainer(dt);
     this.updateAim();
     this.updateSpawning(dt);
-    for (const m of [...this.party, ...this.wilds]) if (m.act) this.tickAct(m, dt);
+    for (const m of [...this.party, ...this.wilds]) {
+      if (m.act) this.tickAct(m, dt);
+      if (m.alive) this.tickStatus(m, dt);
+    }
     for (const m of this.party) if (!m.fainted) this.updateParty(m, dt);
     for (const m of this.wilds) if (m.alive) this.updateWild(m, dt);
     this.separate();
     this.updateProjectiles(dt);
     this.updateBalls(dt);
     if (
-      this.state === 'playing' && this.toSpawn === 0 && !this.bossPending &&
+      this.state === 'playing' && this.toSpawn === 0 && !this.leaderPending &&
       this.wilds.length === 0 && !this.balls.some((b) => b.state === 'wobble') &&
       !this.party.some((p) => p.evolveTo) // let a last-kill evolution play out before the reward screen
     ) this.endRound();
@@ -532,6 +589,7 @@ export class Game {
     if (k.has('d') || k.has('arrowright')) x += 1;
     const len = Math.hypot(x, z);
     t.inv -= dt;
+    t.slowT -= dt;
     this.dodge -= dt;
     this.dashCd -= dt;
     t.moving = len > 0;
@@ -541,8 +599,9 @@ export class Game {
       t.pos.z += this.dashDir.y * DASH_SPEED * dt;
       if (Math.random() < 0.6) this.fx.spawn('wisp', t.pos.clone().setY(0.4), { size: 0.9, life: 0.35, grow: 0.6, color: 0xdddddd });
     } else if (t.moving) {
-      t.pos.x += (x / len) * TRAINER_SPEED * dt;
-      t.pos.z += (z / len) * TRAINER_SPEED * dt;
+      const v = TRAINER_SPEED * (t.slowT > 0 ? 0.5 : 1);
+      t.pos.x += (x / len) * v * dt;
+      t.pos.z += (z / len) * v * dt;
       t.face(x, z);
     } else if (t.throwT <= 0) {
       t.face(this.aim.x - t.pos.x, this.aim.z - t.pos.z);
@@ -599,29 +658,49 @@ export class Game {
   private updateSpawning(dt: number) {
     if (this.toSpawn > 0) {
       this.spawnTimer -= dt;
-      const cap = 3 + Math.floor(this.round / 3);
+      // Early encounters come one or two at a time, like the games; later the crowds grow.
+      const cap = Math.min(2 + Math.floor(this.round / 3), 1 + Math.floor(this.round / 2));
       if (this.spawnTimer <= 0 && this.wilds.length < cap) {
         this.spawnWild(false);
         this.toSpawn--;
         this.spawnTimer = Math.max(1, 2.4 - this.round * 0.07);
       }
-    } else if (this.bossPending && this.wilds.length <= 1) {
-      this.bossPending = false;
+    } else if (this.leaderPending && this.wilds.length <= 1) {
+      this.leaderPending = false;
       const b = this.spawnWild(true);
-      this.ui.toast(`An ALPHA ${b.sp.name} appeared!`, 'warn');
-      audio.alpha();
+      this.ui.toast(`A strong wild ${b.sp.name} appeared!`, 'warn');
+      audio.strong();
       void audio.cry(b.sp.id, 0.7, 0.8);
     }
   }
 
-  private spawnWild(boss: boolean) {
-    // Each area has its own encounter table (and Alpha list); evolved forms unlock later in the area.
+  /**
+   * The finale of an area: one of its basic Pokémon, evolved. It always takes the first step (Pidgey → Pidgeotto) and
+   * keeps going while its level would allow it (Caterpie → Metapod → Butterfree in Viridian Forest).
+   */
+  private leaderSpecies(level: number) {
     const stage = areaRound(this.round);
-    const table = boss ? this.biome.alphas : this.biome.wild.filter((e) => e.from <= stage);
-    const sp = weightedPick(table, (e) => e.w).sp;
-    const level = Math.max(2, Math.round(this.round * 1.4) + Math.floor(Math.random() * 2)) + (boss ? 3 : 0);
+    const table = this.biome.wild.filter((e) => e.from <= stage);
+    const basics = table.filter((e) => !EVOLVED.has(e.sp.id) && e.sp.evos?.length);
+    let sp = weightedPick(basics.length ? basics : table, (e) => e.w).sp;
+    for (let first = true; sp.evos?.length; first = false) {
+      const ok = first ? sp.evos : sp.evos.filter((e) => (e.level !== undefined ? e.level <= level : level >= 30));
+      if (!ok.length) break;
+      sp = SPECIES_BY_ID[pick(ok).to];
+    }
+    return sp;
+  }
+
+  private spawnWild(leader: boolean) {
+    // Each area has its own encounter table; evolved forms unlock later in the area.
+    const stage = areaRound(this.round);
+    const level = Math.min(100, wildLevel(this.round) + (leader ? LEADER_LEVELS : 0));
+    const sp = leader ? this.leaderSpecies(level) : weightedPick(this.biome.wild.filter((e) => e.from <= stage), (e) => e.w).sp;
     const shiny = Math.random() < SHINY_ODDS;
-    const m = new Mon(sp, level, 'wild', boss, shiny);
+    const m = new Mon(sp, level, 'wild', leader, shiny);
+    // The area's strong Pokémon brings the wild-battle theme; legendaries their own.
+    if (sp.legendary) audio.playMusic(sp.id === 'mewtwo' ? MUSIC.mewtwo : MUSIC.legend);
+    else if (leader) audio.playMusic(MUSIC.wild);
     const tp = this.trainer.pos;
     let x = 0, z = 0;
     for (let i = 0; i < 20; i++) {
@@ -641,7 +720,7 @@ export class Game {
       this.ui.toast(`✦ A shiny ${sp.name} appeared!`, 'warn');
       this.hint('shiny', 'Shiny Pokémon are rare — follow the blue arrow and catch it before your team KOs it (F holds fire).');
     }
-    if (!boss && !this.criedThisRound.has(sp.id)) {
+    if (!leader && !this.criedThisRound.has(sp.id)) {
       this.criedThisRound.add(sp.id);
       void audio.cry(sp.id, 0.3);
     }
@@ -667,7 +746,7 @@ export class Game {
         m.target = this.nearest(m.pos, this.wilds.filter((w) => w.alive && distXZ(w.pos, tp) < 12));
       }
     }
-    if (m.target) this.engage(m, m.target, dt, m.sp.speed);
+    if (m.target) this.engage(m, m.target, dt, m.sp.speed * m.slowMul);
     else {
       m.hp = Math.min(m.maxHp, m.hp + m.maxHp * 0.03 * dt); // catch breath out of combat
       const a = (this.party.indexOf(m) / PARTY_MAX) * Math.PI * 2 + 0.6;
@@ -680,67 +759,12 @@ export class Game {
     m.cd -= dt;
     m.moving = false;
     if (this.windingUp(m)) return;
-    if (m.boss) {
-      if (m.slamT > 0) return this.updateSlam(m, dt);
-      m.slamCd -= dt;
-      if (m.slamCd <= 0 && m.target && distXZ(m.target.pos, m.pos) < SLAM_R + 1) return this.startSlam(m);
-    }
     m.retarget -= dt;
     if (!m.target || !this.valid(m.target) || m.retarget <= 0) {
       m.retarget = 1 + Math.random();
       m.target = this.nearest<Unit>(m.pos, [...this.party.filter((p) => p.alive), this.trainer]);
     }
-    if (m.target) this.engage(m, m.target, dt, m.sp.speed * (m.boss ? 0.75 : 0.8));
-  }
-
-  /** Alpha signature: a telegraphed ground slam. The red disc fills up — dash out before it lands. */
-  private startSlam(m: Mon) {
-    m.slamT = SLAM_WIND;
-    const g = new THREE.Group();
-    const mat = (o: number) => new THREE.MeshBasicMaterial({ color: 0xff3b30, transparent: true, opacity: o, depthWrite: false });
-    const fill = new THREE.Mesh(new THREE.CircleGeometry(1, 48), mat(0.35));
-    const edge = new THREE.Mesh(new THREE.RingGeometry(SLAM_R - 0.12, SLAM_R, 64), mat(0.9));
-    for (const d of [fill, edge]) d.rotation.x = -Math.PI / 2;
-    g.add(fill, edge);
-    g.position.set(m.pos.x, 0.05, m.pos.z);
-    this.scene.add(g);
-    this.slams.set(m, g);
-    audio.slamWarn();
-    this.hint('slam', 'Alpha slam! Get out of the red circle — Shift dashes and makes you briefly invulnerable.');
-  }
-
-  private updateSlam(m: Mon, dt: number) {
-    m.slamT -= dt;
-    const g = this.slams.get(m)!;
-    const p = 1 - Math.max(0, m.slamT) / SLAM_WIND;
-    g.children[0].scale.setScalar(Math.max(0.01, SLAM_R * p));
-    m.flash = m.slamT < 0.25 ? 0.05 : 0;
-    if (m.slamT > 0) return;
-    this.clearSlam(m);
-    m.slamCd = rand(5, 7.5);
-    const atk = this.atkOf(m) * 1.8;
-    for (const u of [...this.party.filter((p) => p.alive), this.trainer]) {
-      if (distXZ(u.pos, m.pos) > SLAM_R + u.radius) continue;
-      const mult = u instanceof Mon ? typeMultVs(m.sp.move.type, u.sp) || 0.5 : 1;
-      this.hit(u, Math.round(atk * mult * (u instanceof Trainer ? 0.6 : 0.8)), mult, m.pos, 1.4);
-    }
-    this.shake = Math.max(this.shake, 0.7);
-    this.fx.spawn('impact', m.pos.clone().setY(0.3), { size: SLAM_R * 1.8, life: 0.35, grow: 0.3 });
-    for (let i = 0; i < 8; i++) {
-      const a = (i / 8) * Math.PI * 2;
-      this.fx.spawn(pick(['rock1', 'rock2', 'rock3']), m.pos.clone().setY(0.4), {
-        size: 0.6, life: 0.6, spin: 8, gravity: 14, vel: new THREE.Vector3(Math.cos(a) * 5, 5, Math.sin(a) * 5),
-      });
-    }
-    audio.slam();
-  }
-
-  private clearSlam(m: Mon) {
-    const g = this.slams.get(m);
-    if (!g) return;
-    disposeArena(g);
-    this.slams.delete(m);
-    m.slamT = 0;
+    if (m.target) this.engage(m, m.target, dt, m.sp.speed * m.slowMul * 0.8);
   }
 
   private engage(m: Mon, t: Unit, dt: number, speed: number) {
@@ -753,6 +777,7 @@ export class Game {
   }
 
   private moveTo(m: Mon, x: number, z: number, speed: number, dt: number, stop: number) {
+    if (m.trapT > 0) return; // bound in place
     const dx = x - m.pos.x, dz = z - m.pos.z;
     const d = Math.hypot(dx, dz);
     if (d <= stop) return;
@@ -781,7 +806,7 @@ export class Game {
   private separate() {
     const units: { p: THREE.Vector3; r: number; w: number }[] = [{ p: this.trainer.pos, r: this.trainer.radius, w: 0.2 }];
     for (const m of this.party) if (m.alive) units.push({ p: m.pos, r: m.radius, w: 1 });
-    for (const m of this.wilds) if (m.alive) units.push({ p: m.pos, r: m.radius, w: m.boss ? 0.3 : 1 });
+    for (const m of this.wilds) if (m.alive) units.push({ p: m.pos, r: m.radius, w: 1 });
     for (let i = 0; i < units.length; i++) {
       for (let j = i + 1; j < units.length; j++) {
         const a = units[i], b = units[j];
@@ -799,18 +824,19 @@ export class Game {
 
   // ───────────────────────────── combat ─────────────────────────────
 
-  private atkOf(m: Mon) {
-    const side = m.side === 'party' ? this.partyAtkMul : Math.min(1.2, 0.5 + 0.05 * this.round);
-    return m.sp.atk * (1 + 0.08 * (m.level - 1)) * side * (m.boss ? 1.3 : 1);
-  }
-
   /** Starts a move: the attacker winds up (see animateMon) and the move lands when the wind-up ends. */
   private attack(m: Mon, t: Unit) {
     let mv = m.sp.move;
     if (mv === MOVES.transform && t instanceof Mon) mv = t.sp.move; // Ditto copies whoever it fights
     else if (mv === MOVES.metronome) mv = pick(METRONOME);
     // Slower than a real-time brawler on purpose: every move should be readable.
-    m.cd = m.sp.cooldown * (m.side === 'wild' ? 1.5 : 1.15) * rand(0.9, 1.1);
+    m.cd = m.sp.cooldown * (m.side === 'wild' ? WILD_TEMPO : 1.1) * rand(0.9, 1.1) * (m.status === 'par' ? 1.5 : 1);
+    if (m.status === 'par' && Math.random() < 0.25) {
+      // Fully paralyzed: loses this turn.
+      m.flash = 0.08;
+      this.floater(m.pos, m.height + 0.4, 'Paralyzed!', STATUS_INFO.par.css);
+      return;
+    }
     const dir = new THREE.Vector2(t.pos.x - m.pos.x, t.pos.z - m.pos.z);
     if (dir.lengthSq() < 1e-6) dir.set(0, 1);
     m.act = { pose: mv.kind, t: 0, wind: WIND[mv.kind], dir: dir.normalize(), fired: false, color: TYPE_COLOR[mv.type], fire: () => this.useMove(m, t, mv) };
@@ -833,11 +859,8 @@ export class Game {
 
   private useMove(m: Mon, t: Unit, mv: Move) {
     if (!this.valid(t)) return;
-    const mult = t instanceof Mon ? typeMultVs(mv.type, t.sp) : 1;
-    let dmg = this.atkOf(m) * rand(0.85, 1) * mult;
-    if (t instanceof Trainer) dmg *= 0.7;
-    else if (t.side === 'party') dmg *= 0.8;
-    dmg = mult === 0 ? 0 : Math.max(1, Math.round(dmg));
+    const h = damage(m, t instanceof Mon ? t : null, mv, this.trainer.maxHp);
+    if (h.dmg > 0) h.dmg = Math.max(1, Math.round(h.dmg * (m.side === 'party' ? this.partyAtkMul : wildPower(this.round))));
     audio.move(mv.type, mv.kind);
 
     const from = mid(m);
@@ -846,7 +869,7 @@ export class Game {
       case 'shot':
       case 'spray': {
         const n = mv.count ?? 1;
-        for (let i = 0; i < n; i++) this.launch(from, t, mv, i * (mv.kind === 'spray' ? 0.07 : 0.15), i === n - 1 ? dmg : 0, mult, i === n - 1);
+        for (let i = 0; i < n; i++) this.launch(from, t, m, mv, i * (mv.kind === 'spray' ? 0.07 : 0.15), h, i === n - 1);
         break;
       }
       case 'drop': {
@@ -854,7 +877,7 @@ export class Game {
         const n = mv.count ?? 1;
         for (let i = 0; i < n; i++) {
           const sky = mid(t).add(new THREE.Vector3(rand(-0.8, 0.8), rand(5, 6.5), rand(-0.8, 0.8)));
-          this.launch(sky, t, mv, i * 0.12, i === n - 1 ? dmg : 0, mult, i === n - 1);
+          this.launch(sky, t, m, mv, i * 0.12, h, i === n - 1);
         }
         break;
       }
@@ -870,16 +893,16 @@ export class Game {
         }
         this.fx.spawn(mv.end ?? 'electroball', to, { size: mv.size * (mv.kind === 'bolt' ? 0.9 : 1), life: 0.3, grow: 0.6, ...fxOpts });
         if (mv.kind === 'bolt') this.shake = Math.max(this.shake, 0.2);
-        this.hit(t, dmg, mult, m.pos, 0.2);
+        this.land(t, h, m, mv, m.pos, 0.2);
         break;
       }
       case 'melee':
         this.fx.spawn(mv.fx, mid(t), { size: mv.size, life: 0.3, grow: 0.3, rotation: rand(-0.3, 0.3), ...fxOpts });
-        this.hit(t, dmg, mult, m.pos, 0.45);
+        this.land(t, h, m, mv, m.pos, 0.45);
         break;
       case 'burst':
         this.fx.spawn(mv.fx, mid(t), { size: mv.size * 0.4, life: 0.45, grow: 1.6, ...fxOpts });
-        this.hit(t, dmg, mult, m.pos, 0.2);
+        this.land(t, h, m, mv, m.pos, 0.2);
         break;
       case 'quake': {
         // Shockwave under the target plus debris thrown outward.
@@ -893,13 +916,13 @@ export class Game {
           });
         }
         this.shake = Math.max(this.shake, 0.15);
-        this.hit(t, dmg, mult, m.pos, 0.5);
+        this.land(t, h, m, mv, m.pos, 0.5);
         break;
       }
     }
   }
 
-  private launch(from: THREE.Vector3, target: Unit, mv: Move, delay: number, dmg: number, mult: number, real: boolean) {
+  private launch(from: THREE.Vector3, target: Unit, src: Mon, mv: Move, delay: number, hit: Hit, real: boolean) {
     const spray = mv.kind === 'spray';
     const sprite = this.fx.sprite(mv.fx, mv.size * (spray ? rand(0.8, 1.2) : 1));
     if (mv.tint !== undefined) sprite.material.color.setHex(mv.tint);
@@ -909,7 +932,7 @@ export class Game {
     sprite.visible = false;
     this.scene.add(sprite);
     const dur = Math.max(0.12, start.distanceTo(mid(target)) / (spray ? 13 : 10));
-    this.projectiles.push({ sprite, start, target, t: -delay, dur, arc: mv.arc ?? 0, spin: mv.spin ? rand(8, 14) : 0, dmg, mult, real });
+    this.projectiles.push({ sprite, start, target, t: -delay, dur, arc: mv.arc ?? 0, spin: mv.spin ? rand(8, 14) : 0, hit, src, mv, real });
   }
 
   private updateProjectiles(dt: number) {
@@ -925,7 +948,7 @@ export class Game {
       if (f < 1) return true;
       if (p.real) {
         this.fx.spawn('impact', p.sprite.position, { size: 0.6, life: 0.15, grow: 0.4 });
-        this.hit(p.target, p.dmg, p.mult, p.start, 0.2);
+        this.land(p.target, p.hit, p.src, p.mv, p.start, 0.2);
       }
       this.dropSprite(p.sprite);
       return false;
@@ -937,7 +960,64 @@ export class Game {
     s.material.dispose();
   }
 
-  private hit(t: Unit, dmg: number, mult: number, from?: THREE.Vector3, knock = 0) {
+  /** A move connects: damage, then its secondary effects (status, bind, drain, recoil). */
+  private land(t: Unit, h: Hit, src: Mon, mv: Move, from: THREE.Vector3, knock: number) {
+    if (!this.valid(t)) return;
+    if (t instanceof Trainer) {
+      if (mv.slow && this.dodge <= 0) t.slowT = SLOW_TIME;
+      if (h.dmg > 0) this.hit(t, h.dmg, 1, from, knock);
+      return;
+    }
+    if (h.mult === 0) return this.hit(t, 0, 0);
+    if (h.dmg > 0) this.hit(t, h.dmg, h.mult, from, knock, h.crit);
+    if (!t.alive) {
+      if (mv.drain && src.alive) src.hp = Math.min(src.maxHp, src.hp + Math.max(1, Math.round(h.dmg * mv.drain)));
+      return;
+    }
+    if (mv.status && Math.random() < mv.status[1]) this.inflict(t, mv.status[0]);
+    if (mv.trap && t.trapT <= 0) {
+      t.trapT = TRAP_TIME;
+      if (t.side === 'wild') this.floater(t.pos, t.height + 0.4, 'Trapped!', '#ff9a5a');
+    }
+    if (mv.slow) t.slowT = SLOW_TIME;
+    if (mv.drain && src.alive) src.hp = Math.min(src.maxHp, src.hp + Math.max(1, Math.round(h.dmg * mv.drain)));
+    if (mv.recoil && src.alive && h.dmg > 0) this.hit(src, Math.max(1, Math.round(h.dmg * mv.recoil)), 1);
+  }
+
+  private inflict(t: Mon, st: Status) {
+    if (t.status || !t.alive) return;
+    if (t.side === 'party' && this.statusImmune) return;
+    // Type immunities from the games: Poison types can't be poisoned, Fire types can't be burned, Electric can't be paralyzed.
+    const immune = { psn: 'poison', brn: 'fire', par: 'electric' } as const;
+    if (t.sp.type === immune[st] || t.sp.type2 === immune[st]) return;
+    t.status = st;
+    t.statusTick = 1;
+    const info = STATUS_INFO[st];
+    this.floater(t.pos, t.height + 0.5, info.label, info.css);
+    if (t.side === 'party') this.ui.toast(`${t.sp.name} ${info.verb}!`, 'warn');
+    else this.hint('status', 'Status conditions (poison, burn, paralysis) also make wild Pokémon 1.5× easier to catch.');
+  }
+
+  /** Poison/burn chip damage and bind damage. Neither can knock a Pokémon out on its own (it stops at 1 HP). */
+  private tickStatus(m: Mon, dt: number) {
+    m.slowT -= dt;
+    let chip = 0;
+    if (m.trapT > 0) {
+      m.trapT -= dt;
+      chip += m.maxHp * (1 / 16) * dt;
+    }
+    if (m.status === 'psn' || m.status === 'brn') chip += m.maxHp * STATUS_DOT * dt;
+    if (chip <= 0) return;
+    m.hp = Math.max(Math.min(m.hp, 1), m.hp - chip);
+    m.statusTick -= dt;
+    if (m.statusTick <= 0) {
+      m.statusTick = 1;
+      if (m.side === 'party') m.hurtT = 0.2;
+      else m.flash = 0.05;
+    }
+  }
+
+  private hit(t: Unit, dmg: number, mult: number, from?: THREE.Vector3, knock = 0, crit = false) {
     if (t instanceof Trainer) {
       if (t.inv > 0 || this.dodge > 0 || this.state !== 'playing') return;
       t.hp -= dmg;
@@ -961,13 +1041,13 @@ export class Game {
     }
     t.hp -= dmg;
     t.flash = 0.1;
-    this.knockback(t, from, knock * (t.boss ? 0.2 : 1));
+    this.knockback(t, from, knock);
     if (mult > 1 && t.side === 'wild' && this.hitStopCd <= 0) (this.hitStop = 0.05), (this.hitStopCd = 0.3);
     if (t.side === 'party') t.hurtT = 0.3;
     else {
       // Numbers only for damage you deal; your own team's health lives on the party cards.
       audio.hit(mult);
-      this.damageNumber(t, dmg, mult);
+      this.damageNumber(t, dmg, mult, crit);
       if (mult > 1) {
         this.fx.sparkle(mid(t), 3, 0.35);
         this.hint('types', 'Super effective! Mix types in your team to cover more matchups.');
@@ -1005,20 +1085,18 @@ export class Game {
   }
 
   private grantXp(w: Mon) {
-    const awake = this.party.filter((p) => !p.fainted);
-    // Shared XP: a bigger team levels each member a bit slower.
-    const each = Math.round((w.level * 5 * (w.boss ? 4 : 1) * 2) / (awake.length + 1));
-    for (const p of awake) {
-      p.xp += each;
-      while (p.xp >= xpNeed(p.level)) {
-        p.xp -= xpNeed(p.level);
-        this.levelUp(p);
-      }
+    const awake = this.party.filter((p) => !p.fainted).length;
+    for (const p of this.party) {
+      if (p.fainted || p.level >= 100) continue;
+      p.xp += expGain(w, p.level, awake);
+      while (p.level < 100 && p.xp >= expAt(p.sp.growth, p.level + 1)) this.levelUp(p);
     }
   }
 
   levelUp(p: Mon) {
+    if (p.level >= 100) return;
     p.level++;
+    p.xp = Math.max(p.xp, expAt(p.sp.growth, p.level));
     const old = p.maxHp;
     p.recalc();
     if (!p.fainted) p.hp += p.maxHp - old;
@@ -1047,6 +1125,7 @@ export class Game {
     const old = m.sp.name;
     m.showDex(null);
     m.setSpecies(m.evolveTo!);
+    m.xp = Math.max(m.xp, expAt(m.sp.growth, m.level));
     register(m.sp.id, m.shiny);
     m.evolveTo = null;
     m.flash = 0.25;
@@ -1087,7 +1166,7 @@ export class Game {
     const from = this.trainer.pos.clone().setY(1.5);
     const to = this.aim.clone();
     const dist = distXZ(from, to);
-    const sprite = this.fx.sprite('poke-ball', 0.45, true);
+    const sprite = this.fx.sprite(`${this.ball}-ball`, 0.45, true);
     sprite.position.copy(from);
     this.scene.add(sprite);
     this.balls.push({
@@ -1142,13 +1221,16 @@ export class Game {
     b.mon = w;
     b.sprite.position.set(w.pos.x, 0.25, w.pos.z);
     b.sprite.material.rotation = 0;
-    const frac = w.hp / w.maxHp;
-    const chance = clamp((1 - 0.88 * frac) * w.sp.catchRate * (w.boss ? 0.4 : 1) + this.catchBonus, 0.04, 0.97);
+    const chance = this.catchOdds(w);
     b.success = Math.random() < chance;
     b.resolveAt = b.success ? 2.2 : pick([0.8, 1.4, 2.0]);
     this.floater(w.pos, 1.4, `${Math.round(chance * 100)}% catch`, '#7fd3ff');
     this.fx.spawn('shine', b.sprite.position.clone().setY(0.6), { size: 1.4, life: 0.3, grow: 0.5 });
     audio.ballOpen();
+  }
+
+  catchOdds(w: Mon) {
+    return catchChance(w.sp, w.hp, w.maxHp, BALLS[this.ball].mult, w.status);
   }
 
   private resolveCapture(b: Ball) {
@@ -1171,12 +1253,14 @@ export class Game {
     this.caught++;
     this.fx.sparkle(at.clone().setY(0.5), 8);
     this.ui.toast(`Gotcha! ${w.sp.name} was caught!`, 'good');
-    audio.caught();
-    audio.duck(1600);
+    audio.jingle(MUSIC.caught);
     setTimeout(() => void audio.cry(w.sp.id, 0.6), 900);
     const nm = new Mon(w.sp, w.level, 'party', false, w.shiny);
+    Object.assign(nm.ivs, w.ivs); // same individual, same IVs
+    nm.recalc();
     if (register(w.sp.id, w.shiny)) setTimeout(() => this.ui.toast(`New Pokédex entry: ${w.sp.name}!`, 'info'), 700);
     nm.hp = Math.round(nm.maxHp * Math.max(0.5, w.hp / w.maxHp));
+    nm.status = w.status;
     nm.pos.copy(at).setY(0);
     if (this.party.length < PARTY_MAX) this.addToParty(nm);
     else this.showSwap(nm);
@@ -1221,7 +1305,6 @@ export class Game {
 
   private animate(dt: number) {
     weakRingMat.opacity = 0.45 + 0.35 * Math.sin(this.time * 8);
-    for (const m of this.slams.keys()) if (!this.wilds.includes(m) || m.capturing) this.clearSlam(m);
     const f = this.focus && this.valid(this.focus) ? this.focus : null;
     this.focusRing.visible = !!f;
     if (f) {
@@ -1283,7 +1366,7 @@ export class Game {
     }
     const dir = m.act?.dir;
     m.sprite.position.set((dir?.x ?? 0) * pose.fwd + pose.jx, hover + hop - sink + pose.up, (dir?.y ?? 0) * pose.fwd);
-    m.sprite.scale.set((m.viewW * s * pose.grow * (m.flip ? -1 : 1)) / Math.sqrt(squash), m.viewH * s * pose.grow * squash, 1);
+    m.sprite.scale.set((m.viewW * s * pose.grow) / Math.sqrt(squash), m.viewH * s * pose.grow * squash, 1);
     m.sprite.visible = s > 0.01;
     m.shadow.visible = s > 0.05;
 
@@ -1291,7 +1374,11 @@ export class Game {
     if (m.flash > 0) m.mat.color.setScalar(5);
     else if (m.capturing) m.mat.color.setRGB(3, 0.5, 0.5);
     else if (pose.glow > 0) m.mat.color.setScalar(1).lerp(this.tmpColor.setHex(m.act!.color).multiplyScalar(2.2), pose.glow);
-    else m.mat.color.setScalar(1);
+    else if (m.alive && (m.status || m.trapT > 0)) {
+      // Status shows as a slow pulse of its colour (orange for a bind).
+      const c = m.status ? STATUS_INFO[m.status].color : 0xff9a5a;
+      m.mat.color.setScalar(1).lerp(this.tmpColor.setHex(c), 0.3 + 0.2 * Math.sin(this.time * 6));
+    } else m.mat.color.setScalar(1);
 
     const top = m.h * s + hover;
     // Party health lives on the cards; overhead bars are only for wild Pokémon you've hurt.
@@ -1301,10 +1388,6 @@ export class Game {
       m.bar.obj.position.y = top + 0.25;
       m.bar.obj.quaternion.copy(this.camera.quaternion);
       m.bar.set(m.hp / m.maxHp);
-    }
-    if (m.alphaIcon) {
-      m.alphaIcon.position.set(-0.78, top + 0.25, 0); // badge beside the HP bar
-      m.alphaIcon.visible = m.alive;
     }
     if (m.shiny && m.alive && Math.random() < dt * 2.5) {
       this.fx.spawn('shine', mid(m).add(new THREE.Vector3(rand(-0.5, 0.5), rand(0, 0.6), 0)), { size: 0.3, life: 0.5, grow: -0.6 });
@@ -1367,7 +1450,8 @@ export class Game {
   }
 
   /** One number per target: rapid hits (sprays, volleys, several attackers) add into it instead of stacking. */
-  private damageNumber(t: Mon, dmg: number, mult: number) {
+  private damageNumber(t: Mon, dmg: number, mult: number, crit: boolean) {
+    if (crit) this.floater(t.pos, t.height + 1.0, 'Critical hit!', '#ff9a3c');
     const f = this.dmgFloaters.get(t);
     if (f && f.t < 0.35) {
       f.total! += dmg;
@@ -1416,7 +1500,7 @@ export class Game {
         x: ((x * 0.95 + 1) / 2) * innerWidth,
         y: ((1 - y * 0.9) / 2) * innerHeight,
         angle: Math.atan2(-y, x),
-        kind: w.boss ? 'alpha' : w.shiny ? 'shiny' : w.hp / w.maxHp < WEAK ? 'weak' : 'wild',
+        kind: w.leader ? 'leader' : w.shiny ? 'shiny' : w.hp / w.maxHp < WEAK ? 'weak' : 'wild',
       });
     }
     return out;
@@ -1435,11 +1519,38 @@ export class Game {
     this.sun.target.position.copy(this.camFocus);
   }
 
+  /** Info card for the wild Pokémon under the cursor. */
+  private targetInfo() {
+    const w = this.aimMon;
+    if (!w || !w.alive || w.grow < 1) return null;
+    const v = w.pos.clone().setY(w.height + 0.55).project(this.camera);
+    const awake = this.party.filter((p) => !p.fainted);
+    const best = Math.max(0, ...awake.map((p) => typeMultVs(p.sp.move.type, w.sp)));
+    return {
+      x: ((v.x + 1) / 2) * innerWidth,
+      y: ((1 - v.y) / 2) * innerHeight,
+      name: w.sp.name,
+      level: w.level,
+      types: typeChips(w.sp),
+      hpFrac: w.hp / w.maxHp,
+      status: w.status ? { label: STATUS_INFO[w.status].label, color: STATUS_INFO[w.status].css } : undefined,
+      catchPct: Math.round(this.catchOdds(w) * 100),
+      leader: w.leader,
+      shiny: w.shiny,
+      matchup: !awake.length ? undefined : best > 1 ? ('good' as const) : best < 1 ? ('bad' as const) : undefined,
+    };
+  }
+
   private refreshHud() {
     this.ui.setHud({
+      area: this.biome.name,
       round: this.round,
-      remaining: this.wilds.length + this.toSpawn + (this.bossPending ? 1 : 0),
+      remaining: this.wilds.length + this.toSpawn + (this.leaderPending ? 1 : 0),
+      total: this.roundTotal,
       balls: this.pokeballs,
+      ballName: BALLS[this.ball].name,
+      ballIcon: icon(url.item(`${this.ball}-ball`)),
+      slowed: this.trainer.slowT > 0,
       hp: this.trainer.hp,
       maxHp: this.trainer.maxHp,
       hold: this.hold,
@@ -1453,11 +1564,13 @@ export class Game {
         icon: icon(url.front(p.sp.dex, p.shiny)),
         shiny: p.shiny,
         level: p.level,
+        types: typeChips(p.sp),
+        status: p.status ? { label: STATUS_INFO[p.status].label, color: STATUS_INFO[p.status].css } : undefined,
         move: p.sp.move.name,
         color: hex(TYPE_COLOR[p.sp.move.type]),
         hp: p.hp,
         maxHp: p.maxHp,
-        xpFrac: Math.min(1, p.xp / xpNeed(p.level)),
+        xpFrac: p.level >= 100 ? 1 : clamp((p.xp - expAt(p.sp.growth, p.level)) / (expAt(p.sp.growth, p.level + 1) - expAt(p.sp.growth, p.level)), 0, 1),
         fainted: p.fainted,
         hurt: p.hurtT > 0,
         evolving: p.evolveTo !== null,

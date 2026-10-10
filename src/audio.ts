@@ -1,9 +1,10 @@
 import type { MoveKind, PType } from './data';
 import { url } from './assets';
+import { createPlayer, type SongPlayer } from './music';
 
-const MUSIC_VOL = 0.3;
+const MUSIC_VOL = 0.55;
 
-/** Pokémon cries + music are real game audio (see scripts/fetch-assets.ts); SFX are synthesized chiptune blips. */
+/** Pokémon cries and FireRed's music are real game audio (see scripts/fetch-assets.ts); SFX are synthesized chiptune blips. */
 class AudioEngine {
   muted = (() => {
     try {
@@ -17,9 +18,11 @@ class AudioEngine {
   private noiseBuf!: AudioBuffer;
   private cries = new Map<string, Promise<AudioBuffer | null>>();
   private gates = new Map<string, number>();
-  private music: HTMLAudioElement | null = null;
+  private musicBus!: GainNode; // music volume; ducked under jingles and evolutions
+  private jingleBus!: GainNode;
+  private music: SongPlayer | null = null;
   private musicName = '';
-  private musicVol = MUSIC_VOL;
+  private musicReq = 0; // guards against an older song finishing its load after a newer request
 
   /** Must be called from a user gesture before anything is audible. */
   unlock() {
@@ -28,11 +31,29 @@ class AudioEngine {
       this.master = c.createGain();
       this.master.gain.value = this.muted ? 0 : 0.7;
       this.master.connect(c.destination);
+      // Songs differ a lot in loudness (the battle themes are dense); a gentle compressor evens them out.
+      const comp = c.createDynamicsCompressor();
+      comp.threshold.value = -20;
+      comp.knee.value = 12;
+      comp.ratio.value = 4;
+      comp.connect(this.master);
+      this.musicBus = c.createGain();
+      this.musicBus.gain.value = MUSIC_VOL;
+      this.musicBus.connect(comp);
+      this.jingleBus = c.createGain();
+      this.jingleBus.gain.value = MUSIC_VOL;
+      this.jingleBus.connect(comp);
       this.noiseBuf = c.createBuffer(1, c.sampleRate, c.sampleRate);
       const d = this.noiseBuf.getChannelData(0);
       for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     }
     if (this.ctx.state === 'suspended') void this.ctx.resume();
+    // Music requested before the first gesture starts now.
+    if (this.musicName && !this.music) {
+      const name = this.musicName;
+      this.musicName = '';
+      this.playMusic(name);
+    }
   }
 
   toggleMute() {
@@ -41,7 +62,6 @@ class AudioEngine {
       localStorage.setItem('pr-muted', this.muted ? '1' : '0');
     } catch {}
     if (this.ctx) this.master.gain.value = this.muted ? 0 : 0.7;
-    if (this.music) this.music.muted = this.muted;
     return this.muted;
   }
 
@@ -70,43 +90,72 @@ class AudioEngine {
     src.start();
   }
 
+  /** Crossfades to a looping song (no-op if it's already playing). */
   playMusic(name: string) {
     if (this.musicName === name) return;
     this.musicName = name;
+    if (!this.ctx) return; // starts on unlock()
     this.stopMusic(false);
-    const el = new Audio(url.music(name));
-    el.loop = true;
-    el.muted = this.muted;
-    el.volume = 0;
-    el.play().catch(() => {});
-    this.fade(el, this.musicVol, 1200);
-    this.music = el;
+    const req = ++this.musicReq;
+    void this.startSong(name, true).then((p) => {
+      if (p && req !== this.musicReq) this.fadeOut(p, 0.2);
+      else if (p) this.music = p;
+    });
   }
 
   stopMusic(reset = true) {
-    const old = this.music;
-    if (old) this.fade(old, 0, 600, () => old.pause());
+    this.musicReq++;
+    if (this.music) this.fadeOut(this.music, 0.6);
     this.music = null;
     if (reset) this.musicName = '';
   }
 
-  /** Briefly lowers the music, e.g. under the catch jingle. */
-  duck(ms: number) {
-    const el = this.music;
-    if (!el) return;
-    this.fade(el, MUSIC_VOL * 0.25, 120);
-    setTimeout(() => this.music === el && this.fade(el, MUSIC_VOL, 600), ms);
+  /** Plays a fanfare once (round won, Pokémon caught); the music either ducks underneath or stops for it. */
+  async jingle(name: string, stopMusic = false) {
+    if (!this.ctx) return;
+    if (stopMusic) this.stopMusic();
+    else this.setMusicVol(MUSIC_VOL * 0.12, 0.1);
+    const p = await this.startSong(name, false);
+    if (stopMusic) return;
+    if (p) await p.done;
+    this.setMusicVol(MUSIC_VOL, 0.8);
   }
 
-  private fade(el: HTMLAudioElement, to: number, ms: number, done?: () => void) {
-    const from = el.volume, start = performance.now();
-    const step = () => {
-      const f = Math.min(1, (performance.now() - start) / ms);
-      el.volume = from + (to - from) * f;
-      if (f < 1) requestAnimationFrame(step);
-      else done?.();
-    };
-    step();
+  private async startSong(name: string, loop: boolean) {
+    const ctx = this.ctx!;
+    const p = await createPlayer(ctx, loop ? this.musicBus : this.jingleBus, name, loop);
+    if (!p) return null;
+    if (loop) {
+      // Fade in to the song's own volume.
+      const v = p.out.gain.value;
+      p.out.gain.setValueAtTime(0, ctx.currentTime);
+      p.out.gain.linearRampToValueAtTime(v, ctx.currentTime + 0.5);
+    }
+    p.start();
+    return p;
+  }
+
+  private fadeOut(p: SongPlayer, s: number) {
+    const ctx = this.ctx!;
+    const g = p.out.gain;
+    g.cancelScheduledValues(ctx.currentTime);
+    g.setValueAtTime(g.value, ctx.currentTime);
+    g.linearRampToValueAtTime(0, ctx.currentTime + s);
+    p.stop(s);
+  }
+
+  private setMusicVol(v: number, s: number) {
+    if (!this.ctx) return;
+    const g = this.musicBus.gain, t = this.ctx.currentTime;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(v, t + s);
+  }
+
+  /** Briefly lowers the music, e.g. under the evolution sequence. */
+  duck(ms: number) {
+    this.setMusicVol(MUSIC_VOL * 0.25, 0.12);
+    setTimeout(() => this.setMusicVol(MUSIC_VOL, 0.6), ms);
   }
 
   // ── synth ──
@@ -167,11 +216,6 @@ class AudioEngine {
     this.tone(220, 180, 0.07, 'square', 0.07);
     this.tone(330, 260, 0.06, 'square', 0.05, 0.05);
   }
-  caught() {
-    this.tone(1400, 1400, 0.04, 'square', 0.1);
-    [523, 659, 784].forEach((f, i) => this.tone(f, f, 0.12, 'square', 0.07, 0.25 + i * 0.12));
-    this.tone(1047, 1047, 0.4, 'square', 0.07, 0.61);
-  }
   breakFree() {
     this.noise(0.25, 1500, 300, 0.18, 'lowpass');
     this.tone(600, 150, 0.25, 'sawtooth', 0.06);
@@ -230,7 +274,8 @@ class AudioEngine {
     [392, 523, 659].forEach((f, i) => this.tone(f, f, 0.12, 'square', 0.05, i * 0.1));
     this.tone(784, 784, 0.3, 'square', 0.06, 0.3);
   }
-  alpha() {
+  /** A strong Pokémon appears (the area's evolved finale). */
+  strong() {
     this.tone(110, 55, 1, 'sawtooth', 0.08);
     this.noise(1, 200, 60, 0.18, 'lowpass');
   }
@@ -239,13 +284,6 @@ class AudioEngine {
   }
   shiny() {
     [1568, 2093, 2637, 3136].forEach((f, i) => this.tone(f, f, 0.18, 'sine', 0.05, i * 0.07));
-  }
-  slamWarn() {
-    this.tone(70, 110, 1.1, 'sawtooth', 0.05);
-  }
-  slam() {
-    this.noise(0.6, 600, 60, 0.35, 'lowpass');
-    this.tone(90, 40, 0.5, 'square', 0.1);
   }
   ui() {
     this.tone(880, 880, 0.05, 'square', 0.04);

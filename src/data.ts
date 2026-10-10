@@ -63,9 +63,15 @@ export const typeLabel = (sp: Species) => (sp.type2 ? `${sp.type}/${sp.type2}` :
  */
 export type MoveKind = 'shot' | 'spray' | 'beam' | 'melee' | 'burst' | 'quake' | 'drop' | 'bolt';
 
+export type Category = 'physical' | 'special';
+/** Major status conditions: poison and burn chip HP (burn also halves physical damage), paralysis halves speed. */
+export type Status = 'psn' | 'brn' | 'par';
+
 export interface Move {
   name: string;
   type: PType;
+  cat: Category;
+  power: number; // real base power; multi-hit moves store their average total (Pin Missile 25 × ~3 = 75)
   kind: MoveKind;
   fx: string; // Showdown battle-fx sprite name
   size: number;
@@ -75,125 +81,137 @@ export interface Move {
   tint?: number; // multiplies the fx sprite colour
   end?: string; // fx sprite that blooms on the target (beams)
   cd?: number; // cooldown multiplier for heavy hitters
+  // Battle effects, as in the main games
+  highCrit?: boolean; // 1/8 crit chance instead of 1/24
+  status?: [Status, number]; // inflicts a status with this chance
+  drain?: number; // heals this fraction of the damage dealt
+  recoil?: number; // attacker takes this fraction of the damage dealt
+  fixed?: number | 'level'; // fixed damage (Dragon Rage, Night Shade)
+  vsDef?: boolean; // special move that hits physical Defense (Psystrike)
+  trap?: boolean; // binds the target: it can't move and loses HP for a few seconds
+  slow?: boolean; // String Shot: halves the target's speed for a few seconds
 }
 
 // Sizes are authored relative to each other; FX_SCALE keeps every move readable at gameplay zoom.
 const FX_SCALE = 1.5;
-const mv = (name: string, type: PType, kind: MoveKind, fx: string, size: number, extra: Partial<Move> = {}): Move =>
-  ({ name, type, kind, fx, size: size * FX_SCALE, ...extra });
+const P: Category = 'physical', S: Category = 'special';
+const mv = (name: string, type: PType, cat: Category, power: number, kind: MoveKind, fx: string, size: number, extra: Partial<Move> = {}): Move =>
+  ({ name, type, cat, power, kind, fx, size: size * FX_SCALE, ...extra });
 
 export const MOVES = {
   // normal
-  tackle: mv('Tackle', 'normal', 'melee', 'impact', 0.9),
-  scratch: mv('Scratch', 'normal', 'melee', 'leftclaw', 0.9),
-  pound: mv('Pound', 'normal', 'melee', 'impact', 0.8),
-  doubleSlap: mv('Double Slap', 'normal', 'melee', 'impact', 0.9, { tint: 0xffd0e0 }),
-  hyperFang: mv('Hyper Fang', 'normal', 'melee', 'topbite', 1.1),
-  slash: mv('Slash', 'normal', 'melee', 'leftslash', 1.1),
-  hornAttack: mv('Horn Attack', 'normal', 'melee', 'impact', 1.0),
-  stomp: mv('Stomp', 'normal', 'melee', 'foot', 1.1),
-  takeDown: mv('Take Down', 'normal', 'melee', 'impact', 1.3),
-  bodySlam: mv('Body Slam', 'normal', 'quake', 'impact', 1.4),
-  megaPunch: mv('Mega Punch', 'normal', 'melee', 'fist', 1.2),
-  swift: mv('Swift', 'normal', 'shot', 'shine', 0.5, { count: 3, spin: true }),
-  payDay: mv('Pay Day', 'normal', 'shot', 'shine', 0.45, { count: 3, spin: true, arc: 1, tint: 0xffd23f }),
-  triAttack: mv('Tri Attack', 'normal', 'shot', 'mistball', 0.55, { count: 3, tint: 0xffe08a }),
-  eggBomb: mv('Egg Bomb', 'normal', 'shot', 'energyball', 0.9, { arc: 2, tint: 0xfff4d0 }),
-  barrage: mv('Barrage', 'normal', 'shot', 'energyball', 0.6, { count: 2, arc: 1.5, tint: 0xfff4d0 }),
-  hyperBeam: mv('Hyper Beam', 'normal', 'beam', 'shine', 0.9, { tint: 0xffa040, end: 'impact', cd: 1.4 }),
-  transform: mv('Transform', 'normal', 'melee', 'impact', 0.9), // Ditto copies its target's move
+  tackle: mv('Tackle', 'normal', P, 40, 'melee', 'impact', 0.9),
+  scratch: mv('Scratch', 'normal', P, 40, 'melee', 'leftclaw', 0.9),
+  pound: mv('Pound', 'normal', P, 40, 'melee', 'impact', 0.8),
+  doubleSlap: mv('Double Slap', 'normal', P, 45, 'melee', 'impact', 0.9, { tint: 0xffd0e0 }),
+  hyperFang: mv('Hyper Fang', 'normal', P, 80, 'melee', 'topbite', 1.1),
+  slash: mv('Slash', 'normal', P, 70, 'melee', 'leftslash', 1.1, { highCrit: true }),
+  hornAttack: mv('Horn Attack', 'normal', P, 65, 'melee', 'impact', 1.0),
+  stomp: mv('Stomp', 'normal', P, 65, 'melee', 'foot', 1.1),
+  takeDown: mv('Take Down', 'normal', P, 90, 'melee', 'impact', 1.3, { recoil: 0.25 }),
+  bodySlam: mv('Body Slam', 'normal', P, 85, 'quake', 'impact', 1.4, { status: ['par', 0.3] }),
+  megaPunch: mv('Mega Punch', 'normal', P, 80, 'melee', 'fist', 1.2),
+  swift: mv('Swift', 'normal', S, 60, 'shot', 'shine', 0.5, { count: 3, spin: true }),
+  payDay: mv('Pay Day', 'normal', P, 40, 'shot', 'shine', 0.45, { count: 3, spin: true, arc: 1, tint: 0xffd23f }),
+  triAttack: mv('Tri Attack', 'normal', S, 80, 'shot', 'mistball', 0.55, { count: 3, tint: 0xffe08a }),
+  eggBomb: mv('Egg Bomb', 'normal', P, 100, 'shot', 'energyball', 0.9, { arc: 2, tint: 0xfff4d0 }),
+  barrage: mv('Barrage', 'normal', P, 45, 'shot', 'energyball', 0.6, { count: 2, arc: 1.5, tint: 0xfff4d0 }),
+  hyperBeam: mv('Hyper Beam', 'normal', S, 150, 'beam', 'shine', 0.9, { tint: 0xffa040, end: 'impact', cd: 1.4 }),
+  // Ditto copies its target's move
+  transform: mv('Transform', 'normal', P, 0, 'melee', 'impact', 0.9),
   // fire
-  ember: mv('Ember', 'fire', 'shot', 'fireball', 0.75),
-  fireFang: mv('Fire Fang', 'fire', 'melee', 'topbite', 1.1, { tint: 0xffa060 }),
-  firePunch: mv('Fire Punch', 'fire', 'melee', 'fist', 1.1, { tint: 0xff9050 }),
-  flamethrower: mv('Flamethrower', 'fire', 'spray', 'fireball', 0.65, { count: 6 }),
-  fireSpin: mv('Fire Spin', 'fire', 'spray', 'flareball', 0.55, { count: 5, spin: true }),
-  fireBlast: mv('Fire Blast', 'fire', 'shot', 'fireball', 1.4, { cd: 1.3 }),
+  ember: mv('Ember', 'fire', S, 40, 'shot', 'fireball', 0.75, { status: ['brn', 0.1] }),
+  fireFang: mv('Fire Fang', 'fire', P, 65, 'melee', 'topbite', 1.1, { status: ['brn', 0.1], tint: 0xffa060 }),
+  firePunch: mv('Fire Punch', 'fire', P, 75, 'melee', 'fist', 1.1, { status: ['brn', 0.1], tint: 0xff9050 }),
+  flamethrower: mv('Flamethrower', 'fire', S, 90, 'spray', 'fireball', 0.65, { status: ['brn', 0.1], count: 6 }),
+  fireSpin: mv('Fire Spin', 'fire', S, 35, 'spray', 'flareball', 0.55, { trap: true, count: 5, spin: true }),
+  fireBlast: mv('Fire Blast', 'fire', S, 110, 'shot', 'fireball', 1.4, { status: ['brn', 0.1], cd: 1.3 }),
   // water
-  waterGun: mv('Water Gun', 'water', 'spray', 'waterwisp', 0.5, { count: 3 }),
-  bubble: mv('Bubble', 'water', 'shot', 'waterwisp', 0.4, { count: 3, arc: 0.6 }),
-  bubbleBeam: mv('Bubble Beam', 'water', 'spray', 'waterwisp', 0.55, { count: 5 }),
-  hydroPump: mv('Hydro Pump', 'water', 'spray', 'waterwisp', 0.85, { count: 7, cd: 1.2 }),
-  waterPulse: mv('Water Pulse', 'water', 'burst', 'waterwisp', 1.6),
-  surf: mv('Surf', 'water', 'quake', 'waterwisp', 1.6, { tint: 0x8fc8ff }),
-  crabhammer: mv('Crabhammer', 'water', 'melee', 'rightchop', 1.3, { tint: 0x9fd0ff }),
-  clamp: mv('Clamp', 'water', 'melee', 'bottombite', 1.0, { tint: 0x9fd0ff }),
-  waterfall: mv('Waterfall', 'water', 'melee', 'impact', 1.2, { tint: 0x7fb0ff }),
+  waterGun: mv('Water Gun', 'water', S, 40, 'spray', 'waterwisp', 0.5, { count: 3 }),
+  bubble: mv('Bubble', 'water', S, 40, 'shot', 'waterwisp', 0.4, { count: 3, arc: 0.6 }),
+  bubbleBeam: mv('Bubble Beam', 'water', S, 65, 'spray', 'waterwisp', 0.55, { count: 5 }),
+  hydroPump: mv('Hydro Pump', 'water', S, 110, 'spray', 'waterwisp', 0.85, { count: 7, cd: 1.2 }),
+  waterPulse: mv('Water Pulse', 'water', S, 60, 'burst', 'waterwisp', 1.6),
+  surf: mv('Surf', 'water', S, 90, 'quake', 'waterwisp', 1.6, { tint: 0x8fc8ff }),
+  crabhammer: mv('Crabhammer', 'water', P, 100, 'melee', 'rightchop', 1.3, { highCrit: true, tint: 0x9fd0ff }),
+  clamp: mv('Clamp', 'water', P, 35, 'melee', 'bottombite', 1.0, { trap: true, tint: 0x9fd0ff }),
+  waterfall: mv('Waterfall', 'water', P, 80, 'melee', 'impact', 1.2, { tint: 0x7fb0ff }),
   // grass
-  vineWhip: mv('Vine Whip', 'grass', 'melee', 'leftslash', 1.0, { tint: 0x80e060 }),
-  razorLeaf: mv('Razor Leaf', 'grass', 'shot', 'leaf1', 0.55, { count: 2, spin: true }),
-  razorLeaf3: mv('Razor Leaf', 'grass', 'shot', 'leaf2', 0.6, { count: 3, spin: true }),
-  absorb: mv('Absorb', 'grass', 'shot', 'energyball', 0.5),
-  megaDrain: mv('Mega Drain', 'grass', 'shot', 'energyball', 0.75),
-  petalDance: mv('Petal Dance', 'grass', 'spray', 'petal', 0.5, { count: 6, spin: true }),
-  solarBeam: mv('Solar Beam', 'grass', 'beam', 'energyball', 0.8, { end: 'energyball', tint: 0xe8ffb0, cd: 1.3 }),
+  vineWhip: mv('Vine Whip', 'grass', P, 45, 'melee', 'leftslash', 1.0, { tint: 0x80e060 }),
+  razorLeaf: mv('Razor Leaf', 'grass', P, 55, 'shot', 'leaf1', 0.55, { highCrit: true, count: 2, spin: true }),
+  razorLeaf3: mv('Razor Leaf', 'grass', P, 55, 'shot', 'leaf2', 0.6, { highCrit: true, count: 3, spin: true }),
+  absorb: mv('Absorb', 'grass', S, 20, 'shot', 'energyball', 0.5, { drain: 0.5 }),
+  megaDrain: mv('Mega Drain', 'grass', S, 40, 'shot', 'energyball', 0.75, { drain: 0.5 }),
+  petalDance: mv('Petal Dance', 'grass', S, 120, 'spray', 'petal', 0.5, { count: 6, spin: true }),
+  solarBeam: mv('Solar Beam', 'grass', S, 120, 'beam', 'energyball', 0.8, { end: 'energyball', tint: 0xe8ffb0, cd: 1.3 }),
   // electric
-  thunderShock: mv('Thunder Shock', 'electric', 'beam', 'lightning', 0.9, { tint: 0xffffaa, end: 'electroball' }),
-  thunderbolt: mv('Thunderbolt', 'electric', 'beam', 'lightning', 1.2, { tint: 0xffffaa, end: 'electroball' }),
-  thunder: mv('Thunder', 'electric', 'bolt', 'lightning', 1.4, { tint: 0xffffaa, cd: 1.3 }),
-  thunderPunch: mv('Thunder Punch', 'electric', 'melee', 'fist', 1.1, { tint: 0xfff070 }),
-  spark: mv('Spark', 'electric', 'melee', 'electroball', 1.0),
+  thunderShock: mv('Thunder Shock', 'electric', S, 40, 'beam', 'lightning', 0.9, { status: ['par', 0.1], tint: 0xffffaa, end: 'electroball' }),
+  thunderbolt: mv('Thunderbolt', 'electric', S, 90, 'beam', 'lightning', 1.2, { status: ['par', 0.1], tint: 0xffffaa, end: 'electroball' }),
+  thunder: mv('Thunder', 'electric', S, 110, 'bolt', 'lightning', 1.4, { status: ['par', 0.3], tint: 0xffffaa, cd: 1.3 }),
+  thunderPunch: mv('Thunder Punch', 'electric', P, 75, 'melee', 'fist', 1.1, { status: ['par', 0.1], tint: 0xfff070 }),
+  spark: mv('Spark', 'electric', P, 65, 'melee', 'electroball', 1.0, { status: ['par', 0.3] }),
   // ice
-  iceBeam: mv('Ice Beam', 'ice', 'beam', 'iceball', 0.6, { end: 'iceball' }),
-  auroraBeam: mv('Aurora Beam', 'ice', 'beam', 'iceball', 0.55, { end: 'iceball', tint: 0xffc0f0 }),
-  blizzard: mv('Blizzard', 'ice', 'spray', 'iceball', 0.7, { count: 7, spin: true, cd: 1.2 }),
-  icePunch: mv('Ice Punch', 'ice', 'melee', 'fist', 1.1, { tint: 0xa8f0ff }),
-  icicleSpear: mv('Icicle Spear', 'ice', 'shot', 'icicle', 0.6, { count: 3 }),
+  iceBeam: mv('Ice Beam', 'ice', S, 90, 'beam', 'iceball', 0.6, { end: 'iceball' }),
+  auroraBeam: mv('Aurora Beam', 'ice', S, 65, 'beam', 'iceball', 0.55, { end: 'iceball', tint: 0xffc0f0 }),
+  blizzard: mv('Blizzard', 'ice', S, 110, 'spray', 'iceball', 0.7, { count: 7, spin: true, cd: 1.2 }),
+  icePunch: mv('Ice Punch', 'ice', P, 75, 'melee', 'fist', 1.1, { tint: 0xa8f0ff }),
+  icicleSpear: mv('Icicle Spear', 'ice', P, 75, 'shot', 'icicle', 0.6, { count: 3 }),
   // fighting
-  karateChop: mv('Karate Chop', 'fighting', 'melee', 'leftchop', 1.0),
-  crossChop: mv('Cross Chop', 'fighting', 'melee', 'rightchop', 1.4),
-  lowKick: mv('Low Kick', 'fighting', 'melee', 'foot', 1.0),
-  doubleKick: mv('Double Kick', 'fighting', 'melee', 'foot', 0.9),
-  highJumpKick: mv('High Jump Kick', 'fighting', 'melee', 'foot', 1.4),
-  cometPunch: mv('Comet Punch', 'fighting', 'melee', 'fist', 1.1),
-  submission: mv('Submission', 'fighting', 'melee', 'impact', 1.3, { tint: 0xffa090 }),
+  karateChop: mv('Karate Chop', 'fighting', P, 50, 'melee', 'leftchop', 1.0, { highCrit: true }),
+  crossChop: mv('Cross Chop', 'fighting', P, 100, 'melee', 'rightchop', 1.4, { highCrit: true }),
+  lowKick: mv('Low Kick', 'fighting', P, 60, 'melee', 'foot', 1.0),
+  doubleKick: mv('Double Kick', 'fighting', P, 60, 'melee', 'foot', 0.9),
+  highJumpKick: mv('High Jump Kick', 'fighting', P, 130, 'melee', 'foot', 1.4),
+  cometPunch: mv('Comet Punch', 'fighting', P, 54, 'melee', 'fist', 1.1),
+  submission: mv('Submission', 'fighting', P, 80, 'melee', 'impact', 1.3, { recoil: 0.25, tint: 0xffa090 }),
   // poison
-  poisonSting: mv('Poison Sting', 'poison', 'shot', 'poisoncaltrop', 0.45, { spin: true }),
-  twineedle: mv('Twineedle', 'poison', 'shot', 'poisoncaltrop', 0.5, { count: 2, spin: true }),
-  acid: mv('Acid', 'poison', 'spray', 'poisonwisp', 0.5, { count: 4 }),
-  smog: mv('Smog', 'poison', 'burst', 'poisonwisp', 1.4),
-  sludge: mv('Sludge', 'poison', 'shot', 'poisonwisp', 0.8, { arc: 1.5 }),
-  sludgeBomb: mv('Sludge Bomb', 'poison', 'shot', 'poisonwisp', 1.1, { arc: 2 }),
-  poisonFang: mv('Poison Fang', 'poison', 'melee', 'topbite', 1.0, { tint: 0xd890ff }),
+  poisonSting: mv('Poison Sting', 'poison', P, 15, 'shot', 'poisoncaltrop', 0.45, { status: ['psn', 0.3], spin: true }),
+  twineedle: mv('Twineedle', 'poison', P, 50, 'shot', 'poisoncaltrop', 0.5, { status: ['psn', 0.2], count: 2, spin: true }),
+  acid: mv('Acid', 'poison', S, 40, 'spray', 'poisonwisp', 0.5, { count: 4 }),
+  smog: mv('Smog', 'poison', S, 30, 'burst', 'poisonwisp', 1.4, { status: ['psn', 0.4] }),
+  sludge: mv('Sludge', 'poison', S, 65, 'shot', 'poisonwisp', 0.8, { status: ['psn', 0.3], arc: 1.5 }),
+  sludgeBomb: mv('Sludge Bomb', 'poison', S, 90, 'shot', 'poisonwisp', 1.1, { status: ['psn', 0.3], arc: 2 }),
+  poisonFang: mv('Poison Fang', 'poison', P, 50, 'melee', 'topbite', 1.0, { status: ['psn', 0.5], tint: 0xd890ff }),
   // ground
-  mudSlap: mv('Mud-Slap', 'ground', 'spray', 'mudwisp', 0.5, { count: 3 }),
-  boneClub: mv('Bone Club', 'ground', 'shot', 'bone', 0.6, { spin: true }),
-  bonemerang: mv('Bonemerang', 'ground', 'shot', 'bone', 0.7, { count: 2, spin: true, arc: 1 }),
-  dig: mv('Dig', 'ground', 'quake', 'rock1', 1.2),
-  earthquake: mv('Earthquake', 'ground', 'quake', 'rock2', 1.8, { cd: 1.2 }),
+  mudSlap: mv('Mud-Slap', 'ground', S, 20, 'spray', 'mudwisp', 0.5, { count: 3 }),
+  boneClub: mv('Bone Club', 'ground', P, 65, 'shot', 'bone', 0.6, { spin: true }),
+  bonemerang: mv('Bonemerang', 'ground', P, 100, 'shot', 'bone', 0.7, { count: 2, spin: true, arc: 1 }),
+  dig: mv('Dig', 'ground', P, 80, 'quake', 'rock1', 1.2),
+  earthquake: mv('Earthquake', 'ground', P, 100, 'quake', 'rock2', 1.8, { cd: 1.2 }),
   // flying
-  gust: mv('Gust', 'flying', 'shot', 'feather', 0.5, { spin: true }),
-  gust2: mv('Gust', 'flying', 'shot', 'feather', 0.55, { count: 2, spin: true }),
-  airSlash: mv('Air Slash', 'flying', 'shot', 'feather', 0.65, { count: 3, spin: true }),
-  peck: mv('Peck', 'flying', 'melee', 'impact', 0.7),
-  drillPeck: mv('Drill Peck', 'flying', 'melee', 'impact', 1.1, { tint: 0xd8d0ff }),
-  wingAttack: mv('Wing Attack', 'flying', 'melee', 'feather', 1.0),
+  gust: mv('Gust', 'flying', S, 40, 'shot', 'feather', 0.5, { spin: true }),
+  gust2: mv('Gust', 'flying', S, 40, 'shot', 'feather', 0.55, { count: 2, spin: true }),
+  airSlash: mv('Air Slash', 'flying', S, 75, 'shot', 'feather', 0.65, { count: 3, spin: true }),
+  peck: mv('Peck', 'flying', P, 35, 'melee', 'impact', 0.7),
+  drillPeck: mv('Drill Peck', 'flying', P, 80, 'melee', 'impact', 1.1, { tint: 0xd8d0ff }),
+  wingAttack: mv('Wing Attack', 'flying', P, 60, 'melee', 'feather', 1.0),
   // psychic
-  confusion: mv('Confusion', 'psychic', 'burst', 'mistball', 1.1),
-  psybeam: mv('Psybeam', 'psychic', 'burst', 'mistball', 1.4),
-  psychic: mv('Psychic', 'psychic', 'burst', 'mistball', 1.9),
-  psystrike: mv('Psystrike', 'psychic', 'burst', 'mistball', 2.4, { tint: 0xd0a0ff }),
-  metronome: mv('Metronome', 'psychic', 'burst', 'mistball', 1.4), // Mew picks a random move every time
+  confusion: mv('Confusion', 'psychic', S, 50, 'burst', 'mistball', 1.1),
+  psybeam: mv('Psybeam', 'psychic', S, 65, 'burst', 'mistball', 1.4),
+  psychic: mv('Psychic', 'psychic', S, 90, 'burst', 'mistball', 1.9),
+  psystrike: mv('Psystrike', 'psychic', S, 100, 'burst', 'mistball', 2.4, { vsDef: true, tint: 0xd0a0ff }),
+  // Mew picks a random move every time
+  metronome: mv('Metronome', 'psychic', S, 0, 'burst', 'mistball', 1.4),
   // bug
-  stringShot: mv('String Shot', 'bug', 'shot', 'web', 0.6),
-  leechLife: mv('Leech Life', 'bug', 'melee', 'bottombite', 0.9, { tint: 0xc8f070 }),
-  pinMissile: mv('Pin Missile', 'bug', 'shot', 'caltrop', 0.45, { count: 4, tint: 0xd0f080 }),
-  xScissor: mv('X-Scissor', 'bug', 'melee', 'leftslash', 1.2, { tint: 0xc8f070 }),
-  signalBeam: mv('Signal Beam', 'bug', 'beam', 'electroball', 0.5, { end: 'electroball', tint: 0xa0ff80 }),
+  stringShot: mv('String Shot', 'bug', S, 0, 'shot', 'web', 0.6, { slow: true }),
+  leechLife: mv('Leech Life', 'bug', P, 80, 'melee', 'bottombite', 0.9, { drain: 0.5, tint: 0xc8f070 }),
+  pinMissile: mv('Pin Missile', 'bug', P, 75, 'shot', 'caltrop', 0.45, { count: 4, tint: 0xd0f080 }),
+  xScissor: mv('X-Scissor', 'bug', P, 80, 'melee', 'leftslash', 1.2, { tint: 0xc8f070 }),
+  signalBeam: mv('Signal Beam', 'bug', S, 75, 'beam', 'electroball', 0.5, { end: 'electroball', tint: 0xa0ff80 }),
   // rock
-  rockThrow: mv('Rock Throw', 'rock', 'shot', 'rock1', 0.6, { arc: 2, spin: true }),
-  rockThrow2: mv('Rock Throw', 'rock', 'shot', 'rock2', 0.7, { arc: 2, count: 2, spin: true }),
-  rockSlide: mv('Rock Slide', 'rock', 'drop', 'rock3', 0.85, { count: 3, spin: true }),
-  spikeCannon: mv('Spike Cannon', 'rock', 'shot', 'caltrop', 0.45, { count: 4 }),
+  rockThrow: mv('Rock Throw', 'rock', P, 50, 'shot', 'rock1', 0.6, { arc: 2, spin: true }),
+  rockThrow2: mv('Rock Throw', 'rock', P, 50, 'shot', 'rock2', 0.7, { arc: 2, count: 2, spin: true }),
+  rockSlide: mv('Rock Slide', 'rock', P, 75, 'drop', 'rock3', 0.85, { count: 3, spin: true }),
+  spikeCannon: mv('Spike Cannon', 'rock', P, 60, 'shot', 'caltrop', 0.45, { count: 4 }),
   // ghost
-  lick: mv('Lick', 'ghost', 'melee', 'impact', 0.9, { tint: 0xc890ff }),
-  nightShade: mv('Night Shade', 'ghost', 'burst', 'blackwisp', 1.2),
-  shadowBall: mv('Shadow Ball', 'ghost', 'shot', 'shadowball', 0.8),
-  shadowBall2: mv('Shadow Ball', 'ghost', 'shot', 'shadowball', 1.1),
+  lick: mv('Lick', 'ghost', P, 30, 'melee', 'impact', 0.9, { status: ['par', 0.3], tint: 0xc890ff }),
+  nightShade: mv('Night Shade', 'ghost', S, 0, 'burst', 'blackwisp', 1.2, { fixed: 'level' }),
+  shadowBall: mv('Shadow Ball', 'ghost', S, 80, 'shot', 'shadowball', 0.8),
+  shadowBall2: mv('Shadow Ball', 'ghost', S, 80, 'shot', 'shadowball', 1.1),
   // dragon
-  dragonRage: mv('Dragon Rage', 'dragon', 'shot', 'bluefireball', 0.8),
-  twister: mv('Twister', 'dragon', 'spray', 'wisp', 0.6, { count: 6, spin: true, tint: 0x9090ff }),
-  outrage: mv('Outrage', 'dragon', 'quake', 'bluefireball', 1.8, { tint: 0xb090ff, cd: 1.2 }),
+  dragonRage: mv('Dragon Rage', 'dragon', S, 0, 'shot', 'bluefireball', 0.8, { fixed: 40 }),
+  twister: mv('Twister', 'dragon', S, 40, 'spray', 'wisp', 0.6, { count: 6, spin: true, tint: 0x9090ff }),
+  outrage: mv('Outrage', 'dragon', P, 120, 'quake', 'bluefireball', 1.8, { tint: 0xb090ff, cd: 1.2 }),
 } satisfies Record<string, Move>;
 
 export type MoveId = keyof typeof MOVES;
@@ -204,14 +222,15 @@ export interface Species {
   dex: number; // national dex number, used for sprite paths
   type: PType;
   type2?: PType;
-  hp: number;
-  atk: number;
-  speed: number;
+  base: Stats; // real base stats
+  catchRate: number; // real capture rate, 3-255
+  expYield: number; // real base experience yield
+  growth: Growth;
+  speed: number; // movement speed in the arena
   range: number; // > 2.5 means it attacks from range
   cooldown: number;
   move: Move;
   height: number; // Pokédex height in metres; drives on-screen size
-  catchRate: number;
   legendary?: boolean;
   float?: boolean;
   evos?: Evo[];
@@ -236,7 +255,18 @@ const lv = (to: string, level: number): Evo[] => [{ to, level }];
 const st = (...pairs: [to: string, stone: Stone][]): Evo[] => pairs.map(([to, stone]) => ({ to, stone }));
 
 type Types = PType | [PType, PType];
-/** Real base stats; gameplay numbers are derived from them in `derive`. */
+export interface Stats {
+  hp: number;
+  atk: number;
+  def: number;
+  spa: number;
+  spd: number;
+  spe: number;
+}
+export const STAT_KEYS = ['hp', 'atk', 'def', 'spa', 'spd', 'spe'] as const;
+export const STAT_LABEL = { hp: 'HP', atk: 'Atk', def: 'Def', spa: 'SpA', spd: 'SpD', spe: 'Spe' };
+
+/** Real base stats, in the usual order. */
 type Base = [hp: number, atk: number, def: number, spa: number, spd: number, spe: number];
 type Row = [dex: number, id: string, name: string, types: Types, base: Base, move: MoveId, evos?: Evo[]];
 
@@ -273,12 +303,12 @@ const ROWS: Row[] = [
   [30, 'nidorina', 'Nidorina', 'poison', [70, 62, 67, 55, 55, 56], 'doubleKick', st(['nidoqueen', 'moon-stone'])],
   [31, 'nidoqueen', 'Nidoqueen', ['poison', 'ground'], [90, 92, 87, 75, 85, 76], 'bodySlam'],
   [32, 'nidoranm', 'Nidoran♂', 'poison', [46, 57, 40, 40, 40, 50], 'hornAttack', lv('nidorino', 16)],
-  [33, 'nidorino', 'Nidorino', 'poison', [61, 72, 57, 55, 55, 65], 'poisonSting', st(['nidoking', 'moon-stone'])],
+  [33, 'nidorino', 'Nidorino', 'poison', [61, 72, 57, 55, 55, 65], 'poisonFang', st(['nidoking', 'moon-stone'])],
   [34, 'nidoking', 'Nidoking', ['poison', 'ground'], [81, 102, 77, 85, 75, 85], 'earthquake'],
   [35, 'clefairy', 'Clefairy', 'normal', [70, 45, 48, 60, 65, 35], 'doubleSlap', st(['clefable', 'moon-stone'])],
   [36, 'clefable', 'Clefable', 'normal', [95, 70, 73, 95, 90, 60], 'swift'],
   [37, 'vulpix', 'Vulpix', 'fire', [38, 41, 40, 50, 65, 65], 'ember', st(['ninetales', 'fire-stone'])],
-  [38, 'ninetales', 'Ninetales', 'fire', [73, 76, 75, 81, 100, 100], 'fireSpin'],
+  [38, 'ninetales', 'Ninetales', 'fire', [73, 76, 75, 81, 100, 100], 'flamethrower'],
   [39, 'jigglypuff', 'Jigglypuff', 'normal', [115, 45, 20, 45, 25, 20], 'pound', st(['wigglytuff', 'moon-stone'])],
   [40, 'wigglytuff', 'Wigglytuff', 'normal', [140, 70, 45, 85, 50, 45], 'bodySlam'],
   [41, 'zubat', 'Zubat', ['poison', 'flying'], [40, 45, 35, 30, 40, 55], 'leechLife', lv('golbat', 22)],
@@ -404,6 +434,49 @@ const HEIGHT_DM = [
   20, 4,
 ];
 
+// Per-species data from PokeAPI, indexed by dex number - 1.
+/** Capture rates (3 = legendary, 255 = Caterpie). */
+const CATCH_RATE = [
+  45, 45, 45, 45, 45, 45, 45, 45, 45, 255, 120, 45, 255, 120, 45, 255, 120, 45, 255, 127, 255, 90, 255, 90, 190,
+  75, 255, 90, 235, 120, 45, 235, 120, 45, 150, 25, 190, 75, 170, 50, 255, 90, 255, 120, 45, 190, 75, 190, 75, 255,
+  50, 255, 90, 190, 75, 190, 75, 190, 75, 255, 120, 45, 200, 100, 50, 180, 90, 45, 255, 120, 45, 190, 60, 255, 120,
+  45, 190, 60, 190, 75, 190, 60, 45, 190, 45, 190, 75, 190, 75, 190, 60, 190, 90, 45, 45, 190, 75, 225, 60, 190,
+  60, 90, 45, 190, 75, 45, 45, 45, 190, 60, 120, 60, 30, 45, 45, 225, 75, 225, 60, 225, 60, 45, 45, 45, 45,
+  45, 45, 45, 255, 45, 45, 35, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 25, 3, 3, 3, 45, 45, 45, 3,
+  45,
+];
+/** Base experience yields. */
+const EXP_YIELD = [
+  64, 142, 236, 62, 142, 240, 63, 142, 239, 39, 72, 178, 39, 72, 178, 50, 122, 216, 51, 145, 52, 155, 58, 157, 112,
+  218, 60, 158, 55, 128, 227, 55, 128, 227, 113, 217, 60, 177, 95, 196, 49, 159, 64, 138, 221, 57, 142, 61, 158, 53,
+  149, 58, 154, 64, 175, 61, 159, 70, 194, 60, 135, 230, 62, 140, 225, 61, 142, 227, 60, 137, 221, 67, 180, 60, 137,
+  223, 82, 175, 63, 172, 65, 163, 132, 62, 165, 65, 166, 65, 175, 61, 184, 62, 142, 225, 77, 66, 169, 65, 166, 66,
+  172, 65, 186, 64, 149, 159, 159, 77, 68, 172, 69, 170, 395, 87, 172, 59, 154, 64, 158, 68, 182, 161, 100, 159, 172,
+  173, 175, 172, 40, 189, 187, 101, 65, 184, 184, 184, 79, 71, 173, 71, 173, 180, 189, 261, 261, 261, 60, 147, 270, 306,
+  270,
+];
+/** Growth rates: 1 slow, 2 medium fast, 3 fast, 4 medium slow. */
+const GROWTH_ID = [
+  4, 4, 4, 4, 4, 4, 4, 4, 4, 2, 2, 2, 2, 2, 2, 4, 4, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 4, 4, 4, 4, 4, 4, 3, 3, 2, 2, 3, 3,
+  2, 2, 4, 4, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1, 1, 4, 4, 4, 2, 2, 2, 2,
+  2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 4, 4, 4, 2, 2, 2, 2, 2, 2, 2, 1, 1, 2, 2, 2, 2, 2, 2, 2, 1, 1, 3, 2, 2, 2, 2, 2, 2, 1,
+  1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 4,
+];
+const GROWTHS = ['slow', 'medium', 'fast', 'mediumSlow'] as const;
+export type Growth = (typeof GROWTHS)[number];
+
+/** Total experience needed to reach `level` on a growth curve (the real formulas). */
+export function expAt(g: Growth, level: number) {
+  const n = Math.min(100, level);
+  if (n <= 1) return 0;
+  switch (g) {
+    case 'slow': return Math.floor((5 * n ** 3) / 4);
+    case 'medium': return n ** 3;
+    case 'fast': return Math.floor((4 * n ** 3) / 5);
+    case 'mediumSlow': return Math.max(0, Math.floor((6 / 5) * n ** 3 - 15 * n ** 2 + 100 * n - 140));
+  }
+}
+
 const LEGENDARY = new Set(['articuno', 'zapdos', 'moltres', 'mewtwo', 'mew']);
 
 const FLOATERS = new Set([
@@ -424,47 +497,57 @@ const BLURBS: Record<string, string> = {
 const clampN = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 const MELEE = new Set<MoveKind>(['melee', 'quake']);
 
-/** Turns real base stats into this game's numbers (tuned so the original hand-made roster barely moved). */
-function derive([hp, atk, def, spa, spd, spe]: Base, move: Move, id: string) {
-  const bst = hp + atk + def + spa + spd + spe;
-  const power = Math.max(atk, spa);
-  const legendary = LEGENDARY.has(id);
+/** Arena behaviour (movement, reach, attack rhythm) comes from base stats; battle maths uses the real stats (see battle.ts). */
+function derive([, atk, , spa, , spe]: Base, move: Move) {
   return {
-    hp: Math.round(0.45 * (hp + (def + spd) / 2) + 3),
-    atk: Math.max(2, Math.round(0.16 * power + 1)),
     speed: clampN(3 + spe * 0.03, 3, 7.2),
-    range: MELEE.has(move.kind) ? 1.6 : clampN(4 + power * 0.015, 4.5, 6.5),
+    range: MELEE.has(move.kind) ? 1.6 : clampN(4 + Math.max(atk, spa) * 0.015, 4.5, 6.5),
     cooldown: (move.cd ?? 1) * 1.2 * clampN(1.2 - spe * 0.003, 0.85, 1.15),
-    catchRate: legendary ? 0.12 : clampN(1.35 - bst / 450, 0.22, 1),
-    legendary: legendary || undefined,
   };
 }
 
-export const SPECIES: Species[] = ROWS.map(([dex, id, name, types, base, moveId, evos]) => {
+export const SPECIES: Species[] = ROWS.map(([dex, id, name, types, b, moveId, evos]) => {
   const [type, type2] = Array.isArray(types) ? types : [types];
   const move = MOVES[moveId];
-  return { id, name, dex, type, type2, move, height: HEIGHT_DM[dex - 1] / 10, ...derive(base, move, id), float: FLOATERS.has(id) || undefined, evos, blurb: BLURBS[id] };
+  return {
+    id, name, dex, type, type2, move, height: HEIGHT_DM[dex - 1] / 10, ...derive(b, move),
+    base: { hp: b[0], atk: b[1], def: b[2], spa: b[3], spd: b[4], spe: b[5] },
+    catchRate: CATCH_RATE[dex - 1], expYield: EXP_YIELD[dex - 1], growth: GROWTHS[GROWTH_ID[dex - 1] - 1],
+    legendary: LEGENDARY.has(id) || undefined, float: FLOATERS.has(id) || undefined, evos, blurb: BLURBS[id],
+  };
 });
 
 export const SPECIES_BY_ID: Record<string, Species> = Object.fromEntries(SPECIES.map((s) => [s.id, s]));
 
+/** Species that something evolves into (everything else is a basic Pokémon). */
+export const EVOLVED = new Set(SPECIES.flatMap((s) => (s.evos ?? []).map((e) => e.to)));
+
 export const STARTERS = ['bulbasaur', 'charmander', 'squirtle'];
 
 /** Item sprites used for reward icons and the thrown ball. */
-export const ITEMS = ['poke-ball', 'great-ball', 'hyper-potion', 'max-revive', 'rare-candy', 'x-attack', 'focus-band', ...Object.keys(STONE_NAME)];
+export const ITEMS = ['poke-ball', 'great-ball', 'ultra-ball', 'full-heal', 'hyper-potion', 'max-revive', 'rare-candy', 'x-attack', 'focus-band', ...Object.keys(STONE_NAME)];
 
 /** Battle-fx sprites used outside of moves. */
-export const FX_EXTRA = ['impact', 'shine', 'alpha', 'electroball', 'wisp', 'rock1', 'rock2', 'rock3'];
+export const FX_EXTRA = ['impact', 'shine', 'electroball', 'wisp', 'rock1', 'rock2', 'rock3'];
 
 /** Every fx sprite the game can draw. */
 export const FX_ALL = [...new Set([...Object.values(MOVES).flatMap((m: Move) => [m.fx, ...(m.end ? [m.end] : [])]), ...FX_EXTRA])];
 
+/**
+ * FireRed/LeafGreen songs (pret/pokefirered MIDI + the game's own instrument samples, played by src/music.ts).
+ * Each area uses the theme its FRLG map plays (Seafoam really does share Viridian Forest's, Safari Zone the evolution theme).
+ */
 export const MUSIC = {
-  boss: 'bw2-kanto-gym-leader',
+  wild: 'mus_vs_wild', // an area's last round: its evolved Pokémon shows up
+  legend: 'mus_vs_legend',
+  mewtwo: 'mus_vs_mewtwo',
+  victory: 'mus_victory_wild',
+  caught: 'mus_caught_intro', // the "Gotcha!" fanfare
   // one per area, in BIOMES order
   areas: [
-    'hgss-kanto-trainer', 'bw-trainer', 'dpp-trainer', 'oras-trainer', 'xy-trainer', 'hgss-johto-trainer', 'bw-subway-trainer',
-    'sm-trainer', 'bw-rival', 'dpp-rival', 'xy-rival', 'oras-rival', 'bw2-rival', 'sm-rival',
+    'mus_route1', 'mus_viridian_forest', 'mus_mt_moon', 'mus_route24', 'mus_route11', 'mus_mt_moon', 'mus_poke_tower',
+    'mus_cycling', 'mus_evolution', 'mus_viridian_forest', 'mus_poke_mansion', 'mus_sevii_cave', 'mus_victory_road',
+    'mus_rocket_hideout',
   ],
 };
 

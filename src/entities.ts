@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import type { MoveKind, Species } from './data';
+import { expAt, type MoveKind, type Species, type Stats, type Status } from './data';
+import { calcStats, randomIvs } from './battle';
 import { type AnimSheet, getAnim, getTex, setFrame, sheetView, silhouette, url } from './assets';
 import { shared } from './models';
 
@@ -60,9 +61,15 @@ export interface Act {
 export const ACT_FOLLOW = 0.25;
 
 export class Mon {
-  xp = 0;
+  xp = 0; // total experience, on the species' growth curve
   hp = 0;
   maxHp = 0;
+  readonly ivs: Stats = randomIvs();
+  stats!: Stats;
+  status: Status | null = null;
+  statusTick = 0; // seconds until the next poison/burn chip
+  trapT = 0; // >0 while bound by Fire Spin / Clamp
+  slowT = 0; // >0 while slowed by String Shot
   cd = Math.random() * 0.8;
   flash = 0;
   hurtT = 0; // recent damage, drives the party card flash
@@ -75,8 +82,6 @@ export class Mon {
   moving = false;
   anim = Math.random() * 10;
   target: Unit | null = null;
-  slamCd = 4; // Alpha ground-slam cooldown
-  slamT = 0; // >0 while winding up a slam
   evolveTo: Species | null = null;
   evolving = 0; // seconds left in the evolution sequence
   evoFlicker = 0; // drives the old/new silhouette swap
@@ -86,7 +91,8 @@ export class Mon {
   private white = false;
   private sheet: AnimSheet | null = null;
   private px = 0.027;
-  private sheetTex = new Map<AnimSheet, THREE.Texture>();
+  /** Per-instance texture views (own UV repeat/offset for frames and mirroring, shared GPU image). */
+  private views = new Map<THREE.Texture, THREE.Texture>();
 
   /** Sprite view: back sprite when heading away from the camera, mirrored to face left/right. */
   back = false;
@@ -102,9 +108,8 @@ export class Mon {
   readonly shadow = new THREE.Mesh(shadowGeo, shadowMat);
   readonly bar = new HpBar();
   readonly ring = new THREE.Mesh(ringGeo, weakRingMat);
-  readonly alphaIcon?: THREE.Sprite;
 
-  constructor(public sp: Species, public level: number, readonly side: Side, readonly boss = false, readonly shiny = false) {
+  constructor(public sp: Species, public level: number, readonly side: Side, readonly leader = false, readonly shiny = false) {
     this.sprite = new THREE.Sprite(this.mat);
     this.sprite.center.set(0.5, 0);
     this.shadow.rotation.x = -Math.PI / 2;
@@ -113,19 +118,17 @@ export class Mon {
     this.ring.position.y = 0.04;
     this.ring.visible = false;
     this.obj.add(this.sprite, this.shadow, this.ring, this.bar.obj);
-    if (boss) {
-      const a = getTex(url.fx('alpha'));
-      this.alphaIcon = new THREE.Sprite(new THREE.SpriteMaterial({ map: a.tex, depthTest: false }));
-      this.alphaIcon.scale.setScalar(0.45);
-      this.alphaIcon.renderOrder = 1000;
-      this.obj.add(this.alphaIcon);
-    }
     this.back = side === 'party';
     this.setSpecies(sp);
+    this.xp = expAt(sp.growth, level);
   }
 
   get pos() {
     return this.obj.position;
+  }
+  /** Speed multiplier from paralysis and String Shot. */
+  get slowMul() {
+    return (this.status === 'par' ? 0.5 : 1) * (this.slowT > 0 ? 0.5 : 1);
   }
   get radius() {
     return Math.max(0.3, this.w * 0.35);
@@ -145,7 +148,7 @@ export class Mon {
     this.hp = Math.round(this.maxHp * frac);
     const f = getTex(url.front(sp.dex, this.shiny));
     // World units per sprite pixel, so the front sprite stands as tall as its Pokédex height says.
-    this.px = (worldHeight(sp.height) * (this.boss ? 1.6 : 1)) / f.h;
+    this.px = worldHeight(sp.height) / f.h;
     this.w = f.w * this.px;
     this.h = f.h * this.px;
     this.shadow.scale.setScalar(Math.max(0.3, this.w * 0.36));
@@ -154,7 +157,8 @@ export class Mon {
   }
 
   recalc() {
-    this.maxHp = Math.round(this.sp.hp * (1 + 0.15 * (this.level - 1)) * (this.boss ? 3.5 : 1));
+    this.stats = calcStats(this.sp.base, this.ivs, this.level);
+    this.maxHp = this.stats.hp;
   }
 
   face(dx: number, dz: number) {
@@ -182,17 +186,24 @@ export class Mon {
     // Animated Black/White sprite once it's decoded; the static sprite until then and for silhouettes.
     const sheet = this.white ? null : getAnim(url.anim(dex, this.back, this.shiny));
     this.sheet = sheet ?? null;
-    let tex: THREE.Texture;
+    let base: THREE.Texture;
     if (sheet) {
-      tex = this.sheetTex.get(sheet) ?? this.sheetTex.set(sheet, sheetView(sheet)).get(sheet)!;
+      base = sheet.tex;
       this.viewW = sheet.w * k;
       this.viewH = sheet.h * k;
     } else {
       const src = this.back ? url.back(dex, this.shiny) : url.front(dex, this.shiny);
       const st = getTex(src);
-      tex = this.white ? silhouette(src) : st.tex;
+      base = this.white ? silhouette(src) : st.tex;
       this.viewW = st.w * k;
       this.viewH = st.h * k;
+    }
+    let tex = this.views.get(base);
+    if (!tex) this.views.set(base, (tex = sheet ? sheetView(sheet) : base.clone()));
+    if (sheet) setFrame(tex, sheet, this.animClock, this.flip);
+    else {
+      tex.repeat.x = this.flip ? -1 : 1;
+      tex.offset.x = this.flip ? 1 : 0;
     }
     if (this.mat.map !== tex) {
       this.mat.map = tex;
@@ -204,11 +215,11 @@ export class Mon {
   tickAnim(dt: number) {
     this.animClock += dt;
     if (!this.sheet && !this.white) this.applyView();
-    if (this.sheet) setFrame(this.mat.map!, this.sheet, this.animClock);
+    if (this.sheet) setFrame(this.mat.map!, this.sheet, this.animClock, this.flip);
   }
 
   dispose() {
-    for (const t of this.sheetTex.values()) t.dispose();
+    for (const t of this.views.values()) t.dispose();
     this.obj.traverse((o) => {
       const m = (o as THREE.Mesh).material;
       if (m && !Array.isArray(m) && !m.userData.shared) m.dispose();
@@ -231,6 +242,7 @@ export class Trainer {
   moving = false;
   throwT = 0;
   facing: Facing = 'down';
+  slowT = 0; // >0 while slowed by String Shot
   readonly radius = 0.45;
   readonly height = 1.9;
   readonly obj = new THREE.Group();
@@ -268,11 +280,14 @@ export class Trainer {
     else this.walk = 0;
     const phase = Math.floor(this.walk) % 4; // step, stand, other step, stand
     const frame = phase % 2 === 0 && walkRate > 0 ? STEPS[this.facing][phase / 2] : STAND[this.facing];
-    this.tex.offset.x = frame / TRAINER_FRAMES;
+    // The sheet only has left-facing frames; right mirrors them in UV space (sprites ignore negative scale).
+    const right = this.facing === 'right';
+    this.tex.repeat.x = (right ? -1 : 1) / TRAINER_FRAMES;
+    this.tex.offset.x = (frame + (right ? 1 : 0)) / TRAINER_FRAMES;
     // A quick wind-up and fling when throwing a ball.
     const th = this.throwT > 0 ? Math.sin((1 - this.throwT / 0.3) * Math.PI) : 0;
     const w = 0.95, h = 1.9;
-    this.sprite.scale.set(w * (this.facing === 'right' ? -1 : 1) * (1 + 0.08 * th), h * (1 - 0.08 * th), 1);
+    this.sprite.scale.set(w * (1 + 0.08 * th), h * (1 - 0.08 * th), 1);
     this.sprite.position.y = walkRate > 0 ? Math.abs(Math.sin(this.walk * Math.PI)) * 0.05 : 0;
   }
 }

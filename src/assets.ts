@@ -12,7 +12,9 @@ export const url = {
   fx: (name: string) => `${BASE}/fx/${name}.png`,
   item: (name: string) => `${BASE}/items/${name}.png`,
   cry: (id: string) => `${BASE}/cries/${id}.mp3`,
-  music: (name: string) => `${BASE}/music/${name}.mp3`,
+  musicMidi: (name: string) => `${BASE}/music/${name}.mid`,
+  musicData: (name: string) => `${BASE}/music/${name}.json`,
+  musicSample: (name: string) => `${BASE}/music/samples/${name}.wav`,
 };
 
 /** A texture cropped to its opaque pixels; w/h are the cropped size in source pixels. */
@@ -227,11 +229,15 @@ export function sheetView(a: AnimSheet) {
   return tex;
 }
 
-/** Points `tex` at the frame of `a` that's showing at time `t` (seconds, loops). */
-export function setFrame(tex: THREE.Texture, a: AnimSheet, t: number) {
+/**
+ * Points `tex` at the frame of `a` that's showing at time `t` (seconds, loops), mirrored if `flip`.
+ * Sprites ignore a negative scale (three.js takes the length of the scale), so mirroring happens in UV space.
+ */
+export function setFrame(tex: THREE.Texture, a: AnimSheet, t: number, flip = false) {
   const tt = ((t % a.total) + a.total) % a.total;
   let i = 0;
   while (i < a.frames - 1 && a.ends[i] <= tt) i++;
   const col = i % a.cols, row = Math.floor(i / a.cols);
-  tex.offset.set(col / a.cols, 1 - (row + 1) / a.rows);
+  tex.repeat.x = (flip ? -1 : 1) / a.cols;
+  tex.offset.set((col + (flip ? 1 : 0)) / a.cols, 1 - (row + 1) / a.rows);
 }
