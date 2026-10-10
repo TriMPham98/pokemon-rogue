@@ -82,8 +82,7 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
   Red/Blue/FireRed. Evolved forms show up in an area's later rounds. The legendary birds and Mewtwo are rare
   encounters on the last round of their FireRed haunts (with the legendary battle themes); Mew hides in Cerulean Cave.
 - 1 in 64 wild Pokémon are shiny (sparkles, chime, blue off-screen arrow). Shininess survives catching and evolving.
-- Progress persists between runs in localStorage: best round, Pokédex, shinies. Catching Pikachu or Eevee,
-  or reaching round 15, unlocks extra starters.
+- Progress persists between runs in localStorage: best round, Pokédex, shinies.
 - Only Pokémon battle: wild ones go after the Pokémon you've sent out, never the trainer. The run ends when your
   whole party faints.
 - The game opens on a title screen (FireRed's title theme, the area slowly circling behind it) with your best round,
@@ -100,7 +99,7 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
 - `src/entities.ts` – `Mon` (animated sprite billboard, attack wind-ups), `Trainer` (overworld sprite), HP bars
 - `src/models.ts` – shared geometry
 - `src/biomes.ts` – areas, their encounter tables, and their arenas (ground, decor, wind, particles, waves)
-- `src/progress.ts` – saved meta-progression and starter unlocks
+- `src/progress.ts` – saved meta-progression
 - `src/game.ts` – game loop, AI, combat, catching, rounds, rewards, hints
 - `src/ui.ts` / `src/style.css` – HUD, party panel, target card, team sheet, modals, off-screen arrows
 - `scripts/fetch-assets.ts` – asset downloader

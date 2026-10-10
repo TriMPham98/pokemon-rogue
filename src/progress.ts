@@ -42,10 +42,3 @@ export function finishRun(round: number) {
   persist();
   return best;
 }
-
-/** Extra starters unlocked by meta-progress. */
-export const UNLOCKS = [
-  { id: 'pikachu', need: 'Catch a Pikachu', ok: () => save.caught.includes('pikachu') },
-  { id: 'eevee', need: 'Catch an Eevee', ok: () => save.caught.includes('eevee') },
-  { id: 'abra', need: 'Reach round 15', ok: () => save.best >= 15 },
-];

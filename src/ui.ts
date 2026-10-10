@@ -10,9 +10,10 @@ export interface CardSpec {
   body?: string;
   tag?: string;
   tagColor?: string;
+  types?: TypeChip[]; // one pill per type, shown in place of `tag`
+  move?: TypeChip; // outlined pill after the type pills
   icon?: string; // image URL
   ghost?: boolean;
-  locked?: boolean;
   stats?: StatBar[]; // base-stat bars (starter picker)
   onClick: () => void;
 }
@@ -241,16 +242,17 @@ export class UI {
     const choices = modal.querySelector('.choices')!;
     for (const c of cards) {
       const btn = document.createElement('button');
-      btn.className = `choice ${c.ghost ? 'ghost' : ''} ${c.locked ? 'locked' : ''}`;
+      btn.className = `choice ${c.ghost ? 'ghost' : ''}`;
       btn.innerHTML = `
         ${c.icon ? `<img class="icon" src="${c.icon}" alt="" />` : ''}
         <div class="title">${c.title}</div>
         ${c.tag ? `<div class="tag" style="background:${c.tagColor ?? '#666'}">${c.tag}</div>` : ''}
+        ${c.types ? `<div class="tags">${c.types.map((t) => `<span class="tag" style="background:${t.color}">${t.label}</span>`).join('')}${c.move ? `<span class="tag move" style="border-color:${c.move.color}">${c.move.label}</span>` : ''}</div>` : ''}
         ${c.body ? `<div class="body">${c.body}</div>` : ''}
         ${c.stats ? `<div class="stats">${c.stats.map((s) => statRow(s.label, s.value)).join('')}</div>` : ''}`;
       // Ignore clicks for a moment so a mid-combat throw click can't pick an option by accident.
       btn.disabled = true;
-      if (!c.locked) setTimeout(() => (btn.disabled = false), 450);
+      setTimeout(() => (btn.disabled = false), 450);
       btn.addEventListener('click', () => {
         audio.ui();
         c.onClick();

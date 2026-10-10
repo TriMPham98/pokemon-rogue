@@ -3,7 +3,7 @@ import { type Species, EVOLVED, FX_ALL, ITEMS, MOVES, MUSIC, SHINY_ODDS, SPECIES
 import { LEADER_LEVELS, BALLS, calcStats, SLOW_TIME, STATUS_DOT, TRAP_TIME, catchChance, damage, WILD_TEMPO, EXP_SHARE_BENCH, expGain, wildLevel, wildPower, type BallKind, type Hit } from './battle';
 import { ARENA_R } from './models';
 import { BIOMES, ROUNDS_PER_AREA, areaRound, biomeFor, buildArena, disposeArena, sunFor, type Biome, type Solid, type Zone } from './biomes';
-import { UNLOCKS, finishRun, register, save } from './progress';
+import { finishRun, register, save } from './progress';
 import { ACT_FOLLOW, Mon, TRAINER_FRAMES, Trainer, weakRingMat } from './entities';
 import { Effects } from './fx';
 import { audio } from './audio';
@@ -201,7 +201,6 @@ export class Game {
   private shake = 0;
   private hitStop = 0;
   private hitStopCd = 0;
-  private unlockedAtStart = new Set<string>();
   private tmpColor = new THREE.Color();
 
   constructor(container: HTMLElement) {
@@ -360,22 +359,19 @@ export class Game {
 
   private showStarter() {
     this.state = 'starter';
-    this.unlockedAtStart = new Set(UNLOCKS.filter((u) => u.ok()).map((u) => u.id));
     const meta = save.runs
       ? `<br/><span class="meta">Best: round ${save.best} · Pokédex ${save.caught.length}/${SPECIES.length} · ✦ ${save.shinies.length} shiny</span>`
       : '';
-    const choices = [...STARTERS.map((id) => ({ id, need: '' })), ...UNLOCKS.map((u) => ({ id: u.id, need: u.ok() ? '' : u.need }))];
     this.ui.showModal(
       'Choose your partner',
       `Survive endless rounds of wild Pokémon. Weaken them, then throw Poké Balls to build a team of six.${meta}`,
-      choices.map(({ id, need }) => {
+      STARTERS.map((id) => {
         const sp = SPECIES_BY_ID[id];
-        if (need) return { title: '???', icon: icon(url.front(sp.dex)), body: `🔒 ${need} to unlock.`, locked: true, onClick: () => {} };
         return {
           title: sp.name,
           icon: icon(url.front(sp.dex)),
-          tag: `${typeLabel(sp)} · ${sp.move.name}`,
-          tagColor: hex(TYPE_COLOR[sp.type]),
+          types: typeChips(sp),
+          move: { label: sp.move.name, color: hex(TYPE_COLOR[sp.move.type]) },
           body: sp.blurb,
           stats: STAT_KEYS.map((k) => ({ label: STAT_LABEL[k], value: sp.base[k] })),
           onClick: () => {
@@ -549,12 +545,10 @@ export class Game {
     audio.stopMusic();
     audio.faint();
     const best = finishRun(this.round);
-    const unlocked = UNLOCKS.filter((u) => u.ok() && !this.unlockedAtStart.has(u.id)).map((u) => SPECIES_BY_ID[u.id].name);
     this.ui.showModal(
       'Run over',
       `${reason}<br/>You reached <b>round ${this.round}</b>, defeated <b>${this.defeated}</b> and caught <b>${this.caught}</b> Pokémon.` +
-        `<br/><span class="meta">${best ? '<span class="best">New best!</span>' : `Best: round ${save.best}`} · Pokédex ${save.caught.length}/${SPECIES.length}</span>` +
-        (unlocked.length ? `<br/><span class="meta best">New starter unlocked: ${unlocked.join(', ')}!</span>` : ''),
+        `<br/><span class="meta">${best ? '<span class="best">New best!</span>' : `Best: round ${save.best}`} · Pokédex ${save.caught.length}/${SPECIES.length}</span>`,
       [{ title: 'Play again', icon: icon(url.item('poke-ball')), body: 'Start a new run', onClick: () => location.reload() }],
     );
   }
