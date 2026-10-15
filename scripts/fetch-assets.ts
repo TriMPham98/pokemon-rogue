@@ -4,9 +4,9 @@
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FX_ALL, ITEMS, MUSIC, SE, SPECIES, TRAINER_SHEET } from '../src/data.ts';
+import { ANIMS, FX_ALL, ITEMS, MUSIC, SE, SPECIES, TRAINER_SHEET } from '../src/data.ts';
 import { ENV, type TileArt } from '../src/env.ts';
-import { addTrunk, encodePng, makeTileset, renderCutout, renderGrid, spriteFrame } from './gba-tiles.ts';
+import { addTrunk, decodeIndexedPng, encodePng, makeTileset, parsePal, renderCutout, renderGrid, spriteFrame } from './gba-tiles.ts';
 
 const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', 'public', 'assets');
 const POKEAPI = 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites';
@@ -223,6 +223,30 @@ async function buildEnv() {
   }
 }
 
+// ───────────── FireRed battle animations ─────────────
+// The move effects (flames, bubbles, bolts, slashes…) from graphics/battle_anims/sprites, as RGBA sheets in battle/.
+
+async function buildBattleAnims() {
+  const SPRITES = `${FIRERED}/battle_anims/sprites`;
+  const defs = Object.entries(ANIMS);
+  await runAll(defs.flatMap(([, a]): [string, string][] => [
+    [`${SPRITES}/${a.file}.png`, `battle/src/${a.file}.png`],
+    ...(a.pal ? [[`${SPRITES}/${a.pal}.pal`, `battle/src/${a.pal}.pal`] as [string, string]] : []),
+  ]));
+  await mkdir(join(OUT, 'battle'), { recursive: true });
+  for (const [name, a] of defs) {
+    try {
+      const { w, h, idx, plte } = decodeIndexedPng(await readFile(join(OUT, `battle/src/${a.file}.png`)));
+      const pal = a.pal ? parsePal(await readFile(join(OUT, `battle/src/${a.pal}.pal`), 'utf8')) : plte;
+      const img = { w, h, px: new Uint8Array(w * h * 4) };
+      for (let i = 0; i < w * h; i++) if (idx[i] && pal[idx[i]]) img.px.set([...pal[idx[i]], 255], i * 4);
+      await writeFile(join(OUT, `battle/${name}.png`), encodePng(img));
+    } catch (e) {
+      failed.push(`battle/${name}.png: ${(e as Error).message}`);
+    }
+  }
+}
+
 async function runAll(list: [string, string][]) {
   const queue = [...list];
   await Promise.all(Array.from({ length: 8 }, async () => {
@@ -232,6 +256,7 @@ async function runAll(list: [string, string][]) {
 await runAll(jobs);
 await runAll(await buildMusic());
 await buildEnv();
+await buildBattleAnims();
 
 console.log(`assets: ${fetched} downloaded, ${skipped} cached, ${failed.length} failed`);
 for (const f of failed) console.warn(`  ✗ ${f}`);

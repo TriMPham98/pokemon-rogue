@@ -25,6 +25,26 @@ export const TRAP_TIME = 4;
 export const SLOW_TIME = 4;
 /** Poison and burn: fraction of max HP lost per second. */
 export const STATUS_DOT = 1 / 20;
+/** Sleep lasts this many seconds (random in the range). */
+export const SLEEP_TIME: [number, number] = [4, 6];
+
+/** Wild Pokémon in a round: more every round, and more again for each Pokémon in your party. */
+export const hordeSize = (round: number, team: number) => Math.min(90, Math.round((3 + round * 0.8) * (1 + 0.35 * (team - 1))));
+/** How many wild Pokémon can be on the field at once. */
+export const hordeCap = (round: number, team: number) => Math.min(26, 3 + Math.floor(round / 4) + 2 * (team - 1));
+/** Seconds between packs arriving. */
+export const spawnGap = (round: number, team: number) => Math.max(0.5, 2.4 - round * 0.07) / (1 + 0.15 * (team - 1));
+/** Wild Pokémon arrive in packs of up to this many, which is what area moves are for. */
+export const packMax = (round: number) => Math.min(4, 1 + Math.floor(round / 5));
+/** Area moves hit everything else near the target for this share of the damage, like spread moves in Double Battles. */
+export const SPLASH = 0.75;
+/** Special charge: per share of a foe's max HP dealt, per share of your own max HP taken, and per second in battle. */
+export const CHARGE = { hit: 0.35, hurt: 0.25, passive: 1 / 25 };
+/**
+ * Voltorb, Geodude, Koffing and co. light a fuse below `hp` of their max HP and explode after `fuse` seconds, hitting
+ * everything (wild Pokémon too) within `r` for `mul` of Explosion's damage.
+ */
+export const BOOM = { hp: 0.5, fuse: 1.6, r: 3.2, mul: 0.6 };
 
 // ───────────── stats ─────────────
 
@@ -89,9 +109,10 @@ export type BallKind = keyof typeof BALLS;
 
 /**
  * Gen 3/4 capture: a = (3M − 2H)·rate·ball·status / 3M, then four shake checks, which works out to (a/255)^¾.
+ * Sleep counts double, the other conditions 1.5×.
  */
 export function catchChance(sp: Species, hp: number, maxHp: number, ball: number, status: Status | null) {
-  const a = (((3 * maxHp - 2 * Math.max(1, hp)) * sp.catchRate * ball) / (3 * maxHp)) * (status ? 1.5 : 1);
+  const a = (((3 * maxHp - 2 * Math.max(1, hp)) * sp.catchRate * ball) / (3 * maxHp)) * (status === 'slp' ? 2 : status ? 1.5 : 1);
   return Math.min(1, Math.max(0.01, (a / 255) ** 0.75));
 }
 

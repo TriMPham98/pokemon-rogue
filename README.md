@@ -16,7 +16,9 @@ npm run dev      # fetches game assets into public/assets on first run
 - From [pret/pokefirered](https://github.com/pret/pokefirered): Red's overworld sprite, FireRed/LeafGreen's music
   (MIDI sequences, voicegroups and instrument samples), and the environment art — ground tiles, tall grass, trees,
   fences, signs, rocks, graves and the Pokémon Center are rendered from the game's own tilesets and object sprites
-  (`scripts/gba-tiles.ts`, picked in `src/env.ts`) into `public/assets/env/`
+  (`scripts/gba-tiles.ts`, picked in `src/env.ts`) into `public/assets/env/`; the move effects (flames, bubbles,
+  bolts, slashes, explosions…) are FireRed's battle-animation sprite sheets, decoded with their palettes into
+  `public/assets/battle/` (listed in `ANIMS` in `src/data.ts`)
 - Black/White animated sprites, cries and battle-effect sprites from [Pokémon Showdown](https://play.pokemonshowdown.com)
 - Capture rates, base experience and growth rates come from [PokeAPI's data](https://github.com/PokeAPI/pokeapi) (baked into `src/data.ts`)
 
@@ -32,7 +34,8 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
 | WASD / arrows | Move the trainer |
 | Mouse | Aim (hovering a wild Pokémon locks on) |
 | Click / Space | Throw a Poké Ball |
-| 1-6 / click a party card | Recall a Pokémon to its ball, or send it back out |
+| 1-6 (hold, aim, release) | Unleash that Pokémon's special at the cursor once it's charged |
+| Click a party card | Recall a Pokémon to its ball, or send it back out |
 | Right-click / F | Toggle between attacking and holding fire (to set up catches) |
 | E | Focus your Pokémon on the wild Pokémon under the cursor (again to clear) |
 | Shift | Dash (1.4s cooldown) |
@@ -58,6 +61,17 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
   between fights. A fresh catch pops straight out of its ball and joins in. Recall one with 1-6 to keep it safe (it
   still earns Exp. Share); the last one standing can't be recalled. Whoever lands the knockout gets full experience,
   everyone else half.
+- Specials (`src/specials.ts`): each Pokémon charges a big move of its first type by dealing and taking damage. Hold
+  its number to see where it lands, release to fire: Fire Blast, Surf (shoves everything away), Sleep Powder (sleeping
+  Pokémon can't act and are 2× easier to catch; Grass types are immune), Thunder (chains through five foes), Blizzard
+  (freezes in place), Focus Punch / Fly (leap in), Poison Gas (a lingering cloud), Earthquake, Psychic (lifts and
+  holds), Spider Web, Rock Slide (flinch), Night Shade, Outrage (rampage) and Hyper Beam (pierces a line, then
+  recharge).
+- Hordes grow with the round and with your party size, and arrive in packs that share a patch of grass. Area moves
+  (Earthquake, Surf, Fire Blast, Blizzard, Thunder, Psychic, Rock Slide, Sludge Bomb, Hyper Beam…) hit everything
+  near the target for 75% damage, like spread moves in doubles. The knobs are at the top of `src/battle.ts`.
+- Wild Voltorb, Electrode, Geodude, Graveler, Golem, Koffing and Weezing light a fuse when badly hurt: a red ring
+  flashes, and 1.6s later they explode, hitting your Pokémon and theirs. Knock them out, catch them or get clear.
 - Wild Pokémon appear in the tall grass (or cave hollows) and loiter there until you or your Pokémon come close —
   then a "!" pops up and they (and their neighbours) go after the nearest of your Pokémon. Your Pokémon only goes after ones that are fighting
   you, so you can walk up to a quiet one and throw a ball.
@@ -66,7 +80,9 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
   Ditto copies its target's move; Mew's Metronome picks a random one each time.
 - Wild Pokémon under 35% HP get a pulsing yellow ring. Hovering a wild Pokémon shows its level, types, status, HP,
   your live catch chance and whether your team hits it super effectively. The pause screen shows your team's stats.
-- Pokémon evolve with the classic white-silhouette sequence (they're invulnerable while it plays):
+- Pokémon evolve with FireRed's full-screen sequence (the white silhouette swapping with its new form, faster and
+  faster, to the evolution theme and fanfare). One that's ready in battle waits for the round to end, and each
+  evolution plays out in full before the reward screen or Pokémon Center:
   - by level — Charmander → Charmeleon at 16, … (trade evolutions like Kadabra → Alakazam are level-based here)
   - by stone — Fire, Water, Thunder, Leaf and Moon Stones, as in the originals. Stones show up as round rewards only when someone can use one,
     and an area's last round always offers one. Eevee lets you choose Vaporeon, Jolteon or Flareon.
@@ -97,7 +113,8 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
 - `src/assets.ts` – asset paths, sprite loading/cropping, animated GIF → sprite-sheet decoding
 - `src/audio.ts` – cries, music buses and jingles, synthesized SFX
 - `src/music.ts` – FireRed MIDI player (m4a-style voices, envelopes, loop markers)
-- `src/fx.ts` – billboard move/impact effects
+- `src/fx.ts` – billboard move/impact effects (animated FireRed sheets, Showdown sprites) and ground rings
+- `src/specials.ts` – each type's charged special
 - `src/entities.ts` – `Mon` (animated sprite billboard, attack wind-ups), `Trainer` (overworld sprite), HP bars
 - `src/models.ts` – shared geometry
 - `src/biomes.ts` – areas, their encounter tables, and their arenas (ground, decor, wind, particles, waves)

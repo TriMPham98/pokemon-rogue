@@ -57,12 +57,25 @@ export interface PartyEntry {
   xpFrac: number;
   fainted: boolean;
   hurt: boolean;
-  evolving: boolean;
+  evolving: boolean; // ready to evolve once the round is over
+  charge: number; // special meter, 0..1
+  special: string;
+  specialColor: string;
   evoLevel?: number;
   evoStones: string[];
   shiny: boolean;
   status?: TypeChip;
   benched: boolean; // recalled to its ball, sitting this fight out
+}
+
+/** One evolution, played full screen like FireRed's: the callbacks cue the music and cries. */
+export interface EvoSpec {
+  from: string;
+  to: string;
+  fromIcon: string;
+  toIcon: string;
+  onStart: () => void;
+  onDone: () => void;
 }
 
 /** The wild Pokémon under the cursor: who it is, how hurt, and the odds of catching it right now. */
@@ -125,6 +138,7 @@ export class UI {
       <div class="toasts" id="toasts"></div>
       <div class="banner" id="banner"></div>
       <div class="modal hidden" id="modal"></div>
+      <div class="evo hidden" id="evo"></div>
       <div class="hero hidden" id="hero"></div>`;
   }
 
@@ -149,7 +163,7 @@ export class UI {
     if (s.focus) setText(focus, `◎ Focus: ${s.focus}`);
     setHtml(
       $('help'),
-      ['WASD move', '1-6 recall/send', 'Shift dash', 'Click throw', 'Right-click hold/attack', 'E focus', 'Esc pause', `M ${s.muted ? 'unmute' : 'mute'}`]
+      ['WASD move', '1-6 special (hold to aim)', 'Card recall', 'Shift dash', 'Click throw', 'Right-click hold/attack', 'E focus', 'Esc pause', `M ${s.muted ? 'unmute' : 'mute'}`]
         .map((t) => {
           const [k, ...rest] = t.split(' ');
           return `<span><kbd>${k}</kbd>${rest.join(' ')}</span>`;
@@ -207,6 +221,7 @@ export class UI {
             <div class="bar hp"><div class="hp-fill"></div></div>
             <div class="mon-foot"><span><span class="dot"></span><span class="move"></span></span><span class="hp-text"></span></div>
             <div class="xp"><div></div></div>
+            <div class="charge"><div></div><span></span></div>
           </div>`;
         card.key = 'filled';
       }
@@ -230,7 +245,13 @@ export class UI {
       setText(q('.move'), p.fainted ? 'Fainted' : p.move);
       setText(q('.hp-text'), `${Math.ceil(p.hp)}/${p.maxHp}`);
       q('.xp > div').style.width = `${p.xpFrac * 100}%`;
-      const cls = ['mon-card', p.benched && 'benched', p.fainted && 'fainted', p.hurt && 'hurt', p.evolving && 'evolving'].filter(Boolean).join(' ');
+      const ready = p.charge >= 1 && !p.fainted && !p.benched;
+      const bar = q('.charge > div');
+      bar.style.width = `${p.charge * 100}%`;
+      bar.style.background = p.specialColor;
+      setText(q('.charge > span'), ready ? `${i + 1} ▸ ${p.special}!` : p.special);
+      card.el.style.setProperty('--special', p.specialColor);
+      const cls = ['mon-card', p.benched && 'benched', p.fainted && 'fainted', p.hurt && 'hurt', p.evolving && 'evolving', ready && 'ready'].filter(Boolean).join(' ');
       if (card.el.className !== cls) card.el.className = cls;
     });
   }
@@ -288,6 +309,59 @@ export class UI {
   hideHero() {
     $('hero').classList.add('hidden');
     $('ui').classList.remove('on-title');
+  }
+
+  /**
+   * FireRed's evolution sequence: the Pokémon turns into a white silhouette that swaps back and forth with its new
+   * form, faster and faster, until a flash reveals it. Resolves once the player has read the result.
+   */
+  async evolution(e: EvoSpec) {
+    const el = $('evo');
+    const wait = (ms: number) => new Promise((res) => setTimeout(res, ms));
+    el.innerHTML = `
+      <div class="evo-sparks">${Array.from({ length: 14 }, (_, i) => `<i style="--i:${i}"></i>`).join('')}</div>
+      <div class="evo-stage"><img class="evo-old" src="${e.fromIcon}" alt="" /><img class="evo-new" src="${e.toIcon}" alt="" /></div>
+      <div class="evo-flash"></div>
+      <div class="evo-text"></div>`;
+    const q = (sel: string) => el.querySelector<HTMLElement>(sel)!;
+    const stage = q('.evo-stage'), old = q('.evo-old'), neu = q('.evo-new'), text = q('.evo-text');
+    el.classList.remove('hidden');
+    void el.offsetWidth;
+    el.classList.add('show');
+    text.textContent = `What? ${e.from} is evolving!`;
+    e.onStart();
+    await wait(1700);
+    stage.classList.add('white');
+    el.classList.add('sparking');
+    await wait(700);
+    // Shrink one form while the other grows, quicker each swap.
+    for (let period = 520, showNew = true; period > 60; period *= 0.86, showNew = !showNew) {
+      stage.style.setProperty('--swap', `${period}ms`);
+      old.style.transform = `scale(${showNew ? 0 : 1})`;
+      neu.style.transform = `scale(${showNew ? 1 : 0})`;
+      await wait(period);
+    }
+    old.style.transform = 'scale(0)';
+    neu.style.transform = 'scale(1)';
+    q('.evo-flash').classList.add('on');
+    await wait(260);
+    stage.classList.remove('white');
+    el.classList.remove('sparking');
+    q('.evo-flash').classList.remove('on');
+    text.textContent = `Congratulations! Your ${e.from} evolved into ${e.to}!`;
+    e.onDone();
+    await wait(900);
+    // Any key or click carries on; otherwise it moves on by itself.
+    let go = () => {};
+    const pressed = new Promise<void>((res) => (go = res));
+    addEventListener('pointerdown', go);
+    addEventListener('keydown', go);
+    await Promise.race([wait(2600), pressed]);
+    removeEventListener('pointerdown', go);
+    removeEventListener('keydown', go);
+    el.classList.remove('show');
+    await wait(250);
+    el.classList.add('hidden');
   }
 
   hideModal() {

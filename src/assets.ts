@@ -10,6 +10,7 @@ export const url = {
   anim: (dex: number, back: boolean, shiny = false) => `${BASE}/sprites/anim/${back ? 'back' : 'front'}/${shiny ? 'shiny/' : ''}${dex}.gif`,
   trainer: (name: string) => `${BASE}/trainer/${name}.png`,
   fx: (name: string) => `${BASE}/fx/${name}.png`,
+  battle: (name: string) => `${BASE}/battle/${name}.png`,
   item: (name: string) => `${BASE}/items/${name}.png`,
   cry: (id: string) => `${BASE}/cries/${id}.mp3`,
   env: (name: string) => `${BASE}/env/${name}.png`,
@@ -25,7 +26,6 @@ export interface SpriteTex {
   h: number;
   canvas: HTMLCanvasElement;
   icon?: string; // cropped image as a data URL for DOM cards, built on first use
-  white?: THREE.Texture;
 }
 
 const cache = new Map<string, SpriteTex>();
@@ -46,6 +46,19 @@ function placeholder(): SpriteTex {
   ctx.textAlign = 'center';
   ctx.fillText('?', 16, 23);
   return (fallback = { tex: new THREE.CanvasTexture(c), w: 32, h: 32, canvas: c });
+}
+
+/** FireRed battle-anim sheets: kept whole (frames are picked by UV offset), crisp pixels. */
+function whole(img: HTMLImageElement): SpriteTex {
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  c.getContext('2d')!.drawImage(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.generateMipmaps = false;
+  tex.minFilter = tex.magFilter = THREE.NearestFilter; // linear would bleed neighbouring frames in
+  return { tex, w: c.width, h: c.height, canvas: c };
 }
 
 function trim(img: HTMLImageElement, pixelArt: boolean): SpriteTex {
@@ -86,7 +99,7 @@ async function load(src: string) {
   img.src = src;
   try {
     await img.decode();
-    cache.set(src, trim(img, !src.includes('/fx/')));
+    cache.set(src, src.includes('/battle/') ? whole(img) : trim(img, !src.includes('/fx/')));
   } catch {
     missing++;
     cache.set(src, placeholder());
@@ -102,26 +115,6 @@ export async function preload(srcs: string[], onProgress: (done: number, total: 
 /** Synchronous lookup; everything is preloaded before the game starts. */
 export function getTex(src: string): SpriteTex {
   return cache.get(src) ?? placeholder();
-}
-
-/** Solid white silhouette of a sprite, for the evolution sequence. Built on first use. */
-export function silhouette(src: string): THREE.Texture {
-  const st = getTex(src);
-  if (st.white) return st.white;
-  const c = document.createElement('canvas');
-  c.width = st.w;
-  c.height = st.h;
-  const ctx = c.getContext('2d')!;
-  ctx.drawImage(st.canvas, 0, 0);
-  ctx.globalCompositeOperation = 'source-in';
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, c.width, c.height);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.generateMipmaps = false;
-  tex.minFilter = THREE.LinearFilter;
-  tex.magFilter = st.tex.magFilter;
-  return (st.white = tex);
 }
 
 /** Cropped sprite for <img> tags, so small Pokémon don't drown in padding. */

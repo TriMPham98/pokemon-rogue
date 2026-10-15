@@ -134,6 +134,51 @@ body {
 .mon-foot .move { overflow: hidden; text-overflow: ellipsis; }
 .xp { height: 3px; background: rgba(255, 255, 255, 0.12); border-radius: 2px; overflow: hidden; }
 .xp > div { height: 100%; background: var(--accent); }
+.charge {
+  position: relative; height: 11px; background: rgba(255, 255, 255, 0.1); border-radius: 3px; overflow: hidden;
+}
+.charge > div { height: 100%; opacity: 0.55; transition: width 0.1s; }
+.charge > span {
+  position: absolute; inset: 0; padding: 0 5px; font-size: 9px; font-weight: 800; line-height: 11px; letter-spacing: 0.02em;
+  text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 1px rgba(0, 0, 0, 0.7);
+}
+.mon-card.ready { border-color: var(--special); animation: ready 0.6s infinite alternate; }
+.mon-card.ready .charge > div { opacity: 1; }
+@keyframes ready { to { box-shadow: var(--shadow), 0 0 0 3px var(--special); } }
+
+/* Full-screen evolution sequence, after FireRed's. */
+.evo {
+  position: fixed; inset: 0; z-index: 20; pointer-events: auto; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 36px; opacity: 0; transition: opacity 0.25s;
+  background: radial-gradient(circle at 50% 42%, #2d5f86 0%, #14284a 45%, #070b18 100%);
+}
+.evo.hidden { display: none; }
+.evo.show { opacity: 1; }
+.evo-stage { position: relative; width: 288px; height: 288px; --swap: 400ms; }
+.evo-stage img {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated;
+  transition: transform var(--swap) ease-in-out, filter 0.6s; filter: drop-shadow(0 10px 12px rgba(0, 0, 0, 0.45));
+}
+.evo-new { transform: scale(0); }
+.evo-stage.white img { filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(200, 230, 255, 0.9)); }
+.evo-flash { position: absolute; inset: 0; background: #fff; opacity: 0; transition: opacity 0.25s; pointer-events: none; }
+.evo-flash.on { opacity: 1; transition: opacity 0.06s; }
+.evo-text {
+  min-width: min(560px, calc(100vw - 32px)); padding: 16px 22px; border-radius: 10px; font-size: 18px; font-weight: 700;
+  background: #f8f8f8; color: #303040; border: 4px solid #5c7cbc; box-shadow: inset 0 0 0 3px #d8e0f0, var(--shadow); text-align: left;
+}
+.evo-sparks { position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity 0.4s; }
+.evo.sparking .evo-sparks { opacity: 1; }
+.evo-sparks i {
+  position: absolute; left: 50%; top: 42%; width: 10px; height: 10px; margin: -5px; background: #fff;
+  clip-path: polygon(50% 0, 62% 38%, 100% 50%, 62% 62%, 50% 100%, 38% 62%, 0 50%, 38% 38%);
+  animation: spark 1.4s linear infinite; animation-delay: calc(var(--i) * -0.1s);
+  --a: calc(var(--i) * 25.7deg);
+}
+@keyframes spark {
+  from { transform: rotate(var(--a)) translateY(0) scale(0.4); opacity: 1; }
+  to { transform: rotate(calc(var(--a) + 90deg)) translateY(-220px) scale(1.2); opacity: 0; }
+}
 
 .help {
   position: absolute; bottom: 7px; left: 50%; transform: translateX(-50%);

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { expAt, type MoveKind, type Species, type Stats, type Status } from './data';
 import { calcStats, randomIvs } from './battle';
-import { type AnimSheet, getAnim, getTex, setFrame, sheetView, silhouette, url } from './assets';
+import { type AnimSheet, getAnim, getTex, setFrame, sheetView, url } from './assets';
 import { shared } from './models';
 
 /**
@@ -70,6 +70,14 @@ export class Mon {
   statusTick = 0; // seconds until the next poison/burn chip
   trapT = 0; // >0 while bound by Fire Spin / Clamp
   slowT = 0; // >0 while slowed by String Shot
+  sleepT = 0; // seconds of sleep left
+  stunT = 0; // >0 while flinching or held by a special: can't move or act
+  rageT = 0; // >0 while rampaging (Outrage): attacks faster and harder
+  fuse = 0; // >0 while a Voltorb or Geodude is about to explode
+  charge = 0; // special move meter, 0..1
+  /** Mid-air during Fly / Focus Punch: flies from `from` to `to`, then `land` fires. */
+  leap: { from: THREE.Vector3; to: THREE.Vector3; t: number; dur: number; land: () => void } | null = null;
+  leapY = 0;
   // Wild behaviour: loiter around `home` until something comes close, then fight.
   home: { x: number; z: number; r: number } | null = null;
   aggro = false;
@@ -88,13 +96,8 @@ export class Mon {
   anim = Math.random() * 10;
   target: Mon | null = null;
   lastHitBy: Mon | null = null; // who gets the knockout's full experience
-  evolveTo: Species | null = null;
-  evolving = 0; // seconds left in the evolution sequence
-  evoFlicker = 0; // drives the old/new silhouette swap
   act: Act | null = null;
   animClock = Math.random() * 10; // drives the animated sprite; runs faster while walking or attacking
-  private viewDex: number | null = null;
-  private white = false;
   private sheet: AnimSheet | null = null;
   private px = 0.027;
   /** Per-instance texture views (own UV repeat/offset for frames and mirroring, shared GPU image). */
@@ -144,7 +147,11 @@ export class Mon {
   }
   /** Can act and be targeted. */
   get alive() {
-    return !this.fainted && this.dying < 0 && !this.capturing && !this.evolveTo;
+    return !this.fainted && this.dying < 0 && !this.capturing;
+  }
+  /** Asleep or stunned: can be hit, but can't move or attack. */
+  get disabled() {
+    return this.status === 'slp' || this.stunT > 0;
   }
 
   setSpecies(sp: Species) {
@@ -178,19 +185,11 @@ export class Mon {
     this.applyView();
   }
 
-  /** Temporarily show another species' sprite, optionally as a white silhouette (evolution flicker). */
-  showDex(dex: number | null, white = false) {
-    if (dex === this.viewDex && white === this.white) return;
-    this.viewDex = dex;
-    this.white = white;
-    this.applyView();
-  }
-
   private applyView() {
-    const dex = this.viewDex ?? this.sp.dex;
+    const dex = this.sp.dex;
     const k = this.px;
-    // Animated Black/White sprite once it's decoded; the static sprite until then and for silhouettes.
-    const sheet = this.white ? null : getAnim(url.anim(dex, this.back, this.shiny));
+    // Animated Black/White sprite once it's decoded; the static sprite until then.
+    const sheet = getAnim(url.anim(dex, this.back, this.shiny));
     this.sheet = sheet ?? null;
     let base: THREE.Texture;
     if (sheet) {
@@ -200,7 +199,7 @@ export class Mon {
     } else {
       const src = this.back ? url.back(dex, this.shiny) : url.front(dex, this.shiny);
       const st = getTex(src);
-      base = this.white ? silhouette(src) : st.tex;
+      base = st.tex;
       this.viewW = st.w * k;
       this.viewH = st.h * k;
     }
@@ -220,7 +219,7 @@ export class Mon {
   /** Advances the animated sprite; picks up a sheet that finished decoding since the last view change. */
   tickAnim(dt: number) {
     this.animClock += dt;
-    if (!this.sheet && !this.white) this.applyView();
+    if (!this.sheet) this.applyView();
     if (this.sheet) setFrame(this.mat.map!, this.sheet, this.animClock, this.flip);
   }
 
