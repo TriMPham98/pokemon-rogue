@@ -62,7 +62,7 @@ export interface PartyEntry {
   evoStones: string[];
   shiny: boolean;
   status?: TypeChip;
-  active: boolean; // the one out of its ball
+  benched: boolean; // recalled to its ball, sitting this fight out
 }
 
 /** The wild Pokémon under the cursor: who it is, how hurt, and the odds of catching it right now. */
@@ -149,7 +149,7 @@ export class UI {
     if (s.focus) setText(focus, `◎ Focus: ${s.focus}`);
     setHtml(
       $('help'),
-      ['WASD move', '1-6 switch', 'Shift dash', 'Click throw', 'Right-click hold/attack', 'E focus', 'Esc pause', `M ${s.muted ? 'unmute' : 'mute'}`]
+      ['WASD move', '1-6 recall/send', 'Shift dash', 'Click throw', 'Right-click hold/attack', 'E focus', 'Esc pause', `M ${s.muted ? 'unmute' : 'mute'}`]
         .map((t) => {
           const [k, ...rest] = t.split(' ');
           return `<span><kbd>${k}</kbd>${rest.join(' ')}</span>`;
@@ -220,7 +220,7 @@ export class UI {
       );
       setHtml(q('.mon-head b'), `${p.shiny ? '<span class="shiny">✦</span>' : ''}${p.name}`);
       setText(q('.lv'), `Lv${p.level}`);
-      setText(q('.slot'), p.active ? '▶' : String(i + 1));
+      setText(q('.slot'), String(i + 1));
       setHtml(q('.mon-types'), p.types.map((c) => chip(c)).join('') + (p.status && !p.fainted ? chip(p.status, 'status') : ''));
       const pct = Math.max(0, (p.hp / p.maxHp) * 100);
       const fill = q('.hp-fill');
@@ -230,7 +230,7 @@ export class UI {
       setText(q('.move'), p.fainted ? 'Fainted' : p.move);
       setText(q('.hp-text'), `${Math.ceil(p.hp)}/${p.maxHp}`);
       q('.xp > div').style.width = `${p.xpFrac * 100}%`;
-      const cls = ['mon-card', p.active && 'active', p.fainted && 'fainted', p.hurt && 'hurt', p.evolving && 'evolving'].filter(Boolean).join(' ');
+      const cls = ['mon-card', p.benched && 'benched', p.fainted && 'fainted', p.hurt && 'hurt', p.evolving && 'evolving'].filter(Boolean).join(' ');
       if (card.el.className !== cls) card.el.className = cls;
     });
   }

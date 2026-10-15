@@ -96,13 +96,13 @@ body {
 }
 .mon-card { position: relative; pointer-events: auto; cursor: pointer; }
 .mon-card.empty { pointer-events: none; }
-.mon-card.active { border-color: var(--gold); box-shadow: var(--shadow), 0 0 0 2px rgba(255, 210, 63, 0.35); }
-.mon-card:not(.active):not(.fainted):not(.empty):hover { border-color: rgba(255, 255, 255, 0.45); }
+.mon-card:not(.fainted):not(.empty):hover { border-color: rgba(255, 255, 255, 0.45); }
+.mon-card.benched { opacity: 0.6; border-style: dashed; }
 .slot {
   position: absolute; top: -7px; left: -6px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px;
   background: #2a3150; border: 1px solid var(--line); font-size: 10px; font-weight: 800; line-height: 15px; text-align: center;
 }
-.mon-card.active .slot { background: var(--gold); color: #1b2a44; }
+.mon-card:not(.benched):not(.fainted) .slot { background: var(--gold); color: #1b2a44; }
 .center-hero { display: flex; align-items: flex-end; justify-content: center; gap: 18px; margin: -6px 0 18px; }
 .center-hero img { image-rendering: pixelated; filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.4)); }
 .center-hero .pc { width: 192px; }

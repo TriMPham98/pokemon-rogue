@@ -87,6 +87,7 @@ export class Mon {
   moving = false;
   anim = Math.random() * 10;
   target: Mon | null = null;
+  lastHitBy: Mon | null = null; // who gets the knockout's full experience
   evolveTo: Species | null = null;
   evolving = 0; // seconds left in the evolution sequence
   evoFlicker = 0; // drives the old/new silhouette swap

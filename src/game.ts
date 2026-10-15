@@ -54,8 +54,8 @@ interface Reward {
 
 const PARTY_MAX = 6;
 const AGGRO_R = 5.5; // wild Pokémon notice you (or your Pokémon) this close
-const SWITCH_CD = 1.2; // seconds between switching Pokémon
-const FAINT_SWITCH = 1.1; // the next Pokémon comes out this long after one faints
+const SWITCH_CD = 0.6; // seconds between recalling / sending out Pokémon
+const FORMATION_R = 1.8; // idle party Pokémon fan out around the trainer at this distance
 const THROW_RANGE = 14;
 const TRAINER_SPEED = 7;
 const CAM_OFFSET = new THREE.Vector3(0, 12, 12);
@@ -161,10 +161,11 @@ export class Game {
 
   readonly trainer = new Trainer(TRAINER_SHEET);
   party: Mon[] = [];
-  /** The one Pokémon out of its ball; the rest of the party waits, like in the games. */
-  active: Mon | null = null;
+  /** Every Pokémon out of its ball and battling: the whole party at once, minus fainted and recalled ones. */
+  out: Mon[] = [];
+  /** Recalled with 1-6 to sit out the fight; they stay in their ball until sent out again. */
+  private benched = new Set<Mon>();
   private switchCd = 0;
-  private faintSwitch = -1;
   private wilds: Mon[] = [];
   private dying: Mon[] = [];
   private projectiles: Projectile[] = [];
@@ -245,7 +246,7 @@ export class Game {
     }
 
     this.bindInput();
-    this.ui.onPartyClick = (i) => this.switchTo(i);
+    this.ui.onPartyClick = (i) => this.toggleOut(i);
     this.resize();
     this.loop();
     void this.load();
@@ -286,7 +287,7 @@ export class Game {
       if (this.state === 'title' && (k === 'enter' || k === ' ')) return this.leaveHero();
       if (k === ' ') this.throwBall();
       if (k === 'f') this.toggleHold();
-      if (k >= '1' && k <= '6') this.switchTo(Number(k) - 1);
+      if (k >= '1' && k <= '6') this.toggleOut(Number(k) - 1);
       if (k === 'm') audio.toggleMute();
       if (k === 'shift') this.dash();
       if (k === 'e') this.setFocus(this.aimMon);
@@ -377,12 +378,11 @@ export class Game {
           onClick: () => {
             audio.unlock();
             const m = new Mon(sp, 5, 'party');
-            m.pos.set(1.5, 0, 1.5);
             this.addToParty(m);
             register(sp.id);
             this.ui.hideModal();
             this.state = 'playing';
-            this.startRound(1);
+            this.startRound(1); // sends it out
           },
         };
       }),
@@ -410,6 +410,7 @@ export class Game {
     this.roundTotal = this.toSpawn + (this.leaderPending ? 1 : 0);
     this.spawnTimer = 1.5;
     this.criedThisRound.clear();
+    this.deploy(); // revived (Max Revive, Pokémon Center) or newly caught Pokémon join in
     const b = biomeFor(n);
     const newArea = b !== this.biome || n === 1;
     if (b !== this.biome) this.setBiome(b);
@@ -450,7 +451,7 @@ export class Game {
     show();
   }
 
-  /** Between areas: Nurse Joy restores the whole party, and you choose who leads into the next area. */
+  /** Between areas: Nurse Joy restores the whole party, fainted ones included. */
   private showCenter() {
     this.state = 'center';
     audio.playMusic(MUSIC.center);
@@ -463,26 +464,16 @@ export class Game {
       this.checkEvolution(p); // a Rare Candy may have pushed a fainted Pokémon past its level
     }
     const area = biomeFor(this.round + 1).name;
-    const go = (lead: Mon | null) => {
+    const go = () => {
       this.ui.hideModal();
-      if (lead && lead !== this.active) this.sendOut(lead, true);
       this.state = 'playing';
       this.startRound(this.round + 1);
     };
     this.ui.showModal(
       'Pokémon Center',
-      `Your Pokémon are fighting fit! Choose who leads the way into <b>${area}</b>.`,
-      [
-        ...this.party.map((p) => ({
-          title: p.sp.name,
-          icon: icon(url.front(p.sp.dex, p.shiny)),
-          tag: `Lv${p.level} · ${typeLabel(p.sp)}`,
-          tagColor: hex(TYPE_COLOR[p.sp.type]),
-          body: p === this.active ? 'Leading now' : 'Lead with this one',
-          onClick: () => go(p),
-        })),
-      ],
-      `<div class="center-hero"><img class="pc" src="${icon(url.env('pokemonCenter'))}" alt="" /><img class="nurse" src="${icon(url.env('nurse'))}" alt="" /></div>`,
+      `Your Pokémon are fighting fit! On to <b>${area}</b>.`,
+      [{ title: `Head to ${area}`, icon: icon(url.item(`${this.ball}-ball`)), body: 'Your whole party comes out swinging.', onClick: go }],
+      `${this.partySummary()}<div class="center-hero"><img class="pc" src="${icon(url.env('pokemonCenter'))}" alt="" /><img class="nurse" src="${icon(url.env('nurse'))}" alt="" /></div>`,
     );
   }
 
@@ -596,8 +587,9 @@ export class Game {
     this.hold = !this.hold;
     for (const p of this.party) p.target = null;
     audio.ui();
-    // The lead acknowledges the order: a low cry to stand down, a sharp one to attack.
-    if (this.active?.alive) void audio.cry(this.active.sp.id, 0.5, this.hold ? 0.85 : 1.1);
+    // The team acknowledges the order: a low cry to stand down, a sharp one to attack.
+    const lead = this.out.find((p) => p.alive);
+    if (lead) void audio.cry(lead.sp.id, 0.5, this.hold ? 0.85 : 1.1);
   }
 
   // ───────────────────────────── main loop ─────────────────────────────
@@ -635,17 +627,11 @@ export class Game {
     this.updateAim();
     this.updateSpawning(dt);
     this.switchCd -= dt;
-    const out = this.active;
-    for (const m of [...(out ? [out] : []), ...this.wilds]) {
+    for (const m of [...this.out, ...this.wilds]) {
       if (m.act) this.tickAct(m, dt);
       if (m.alive) this.tickStatus(m, dt);
     }
-    if (out && !out.fainted) this.updateParty(out, dt);
-    if (this.faintSwitch > 0 && (this.faintSwitch -= dt) <= 0) {
-      // The fainted Pokémon returns to its ball and the next one in line comes out.
-      const next = this.party.find((p) => !p.fainted);
-      if (next) this.sendOut(next);
-    }
+    this.out.forEach((m, i) => this.updateParty(m, i, dt));
     for (const m of this.wilds) if (m.alive) this.updateWild(m, dt);
     this.separate();
     this.updateProjectiles(dt);
@@ -804,7 +790,7 @@ export class Game {
 
   // ───────────────────────────── AI ─────────────────────────────
 
-  private updateParty(m: Mon, dt: number) {
+  private updateParty(m: Mon, slot: number, dt: number) {
     m.cd -= dt;
     m.moving = false;
     if (m.evolveTo) return; // mid-evolution: rooted and untargetable
@@ -825,7 +811,9 @@ export class Game {
     if (m.target) this.engage(m, m.target, dt, m.sp.speed * m.slowMul);
     else {
       m.hp = Math.min(m.maxHp, m.hp + m.maxHp * 0.03 * dt); // catch breath out of combat
-      this.moveTo(m, tp.x + 1.4, tp.z + 1.2, m.sp.speed * 1.3, dt, 0.25);
+      // Fan out in an arc on the camera side of the trainer, so the team doesn't stack on one spot.
+      const n = this.out.length, a = Math.PI / 2 + (slot - (n - 1) / 2) * 0.75;
+      this.moveTo(m, tp.x + Math.cos(a) * FORMATION_R, tp.z + Math.sin(a) * FORMATION_R, m.sp.speed * 1.3, dt, 0.25);
     }
   }
 
@@ -835,16 +823,15 @@ export class Game {
     m.moving = false;
     if (this.windingUp(m)) return;
     if (!m.aggro) {
-      const a = this.active;
-      const near = distXZ(m.pos, this.trainer.pos) < AGGRO_R || (a?.alive && distXZ(m.pos, a.pos) < AGGRO_R) || m.hp < m.maxHp;
+      const near = distXZ(m.pos, this.trainer.pos) < AGGRO_R || this.out.some((p) => p.alive && distXZ(m.pos, p.pos) < AGGRO_R) || m.hp < m.maxHp;
       if (!near) return this.loiter(m, dt);
       this.alert(m);
     }
     m.retarget -= dt;
     if (!m.target || !this.valid(m.target) || m.retarget <= 0) {
       m.retarget = 1 + Math.random();
-      // Only Pokémon battle: wild ones go for whoever you've sent out, never the trainer.
-      m.target = this.active?.alive ? this.active : null;
+      // Only Pokémon battle: wild ones go for the nearest of your Pokémon, never the trainer.
+      m.target = this.nearest(m.pos, this.out.filter((p) => p.alive));
     }
     if (m.target) this.engage(m, m.target, dt, m.sp.speed * m.slowMul * 0.8);
   }
@@ -900,7 +887,7 @@ export class Game {
   }
 
   private valid(u: Mon) {
-    return u.alive && (u.side === 'wild' ? this.wilds.includes(u) : u === this.active);
+    return u.alive && (u.side === 'wild' ? this.wilds.includes(u) : this.out.includes(u));
   }
 
   private nearest(p: THREE.Vector3, list: Mon[]): Mon | null {
@@ -914,7 +901,7 @@ export class Game {
 
   private separate() {
     const units: { p: THREE.Vector3; r: number; w: number }[] = [{ p: this.trainer.pos, r: this.trainer.radius, w: 0.2 }];
-    if (this.active?.alive) units.push({ p: this.active.pos, r: this.active.radius, w: 1 });
+    for (const p of this.out) if (p.alive) units.push({ p: p.pos, r: p.radius, w: 1 });
     for (const m of this.wilds) if (m.alive) units.push({ p: m.pos, r: m.radius, w: 1 });
     for (let i = 0; i < units.length; i++) {
       for (let j = i + 1; j < units.length; j++) {
@@ -1108,6 +1095,7 @@ export class Game {
   private land(t: Mon, h: Hit, src: Mon, mv: Move, from: THREE.Vector3, knock: number) {
     if (!this.valid(t)) return;
     if (h.mult === 0) return this.hit(t, 0, 0);
+    if (src.side === 'party') t.lastHitBy = src;
     if (h.dmg > 0) this.hit(t, h.dmg, h.mult, from, knock, h.crit);
     if (!t.alive) {
       if (mv.drain && src.alive) src.hp = Math.min(src.maxHp, src.hp + Math.max(1, Math.round(h.dmg * mv.drain)));
@@ -1202,16 +1190,19 @@ export class Game {
     }
     m.fainted = true;
     m.target = null;
+    m.act = null;
+    this.out.splice(this.out.indexOf(m), 1); // it shrinks back into its ball in animate()
     void audio.cry(m.sp.id, 0.5, 0.85);
     this.ui.toast(`${m.sp.name} fainted!`, 'bad');
     if (this.party.every((p) => p.fainted)) return this.gameOver('Your whole party fainted!');
-    this.faintSwitch = FAINT_SWITCH;
+    // Don't leave the field empty because the rest were recalled: the last one standing comes out.
+    if (!this.out.length) this.deploy(true);
   }
 
   private grantXp(w: Mon) {
     for (const p of this.party) {
       if (p.fainted || p.level >= 100) continue;
-      p.xp += expGain(w, p.level, p === this.active ? 1 : EXP_SHARE_BENCH);
+      p.xp += expGain(w, p.level, p === w.lastHitBy ? 1 : EXP_SHARE_BENCH);
       while (p.level < 100 && p.xp >= expAt(p.sp.growth, p.level + 1)) this.levelUp(p);
     }
   }
@@ -1224,7 +1215,7 @@ export class Game {
     p.recalc();
     if (!p.fainted) p.hp += p.maxHp - old;
     audio.levelUp();
-    if (p === this.active && !p.fainted) this.floater(p.pos, p.height + 0.5, 'Lv up!', '#7dffa0');
+    if (this.out.includes(p)) this.floater(p.pos, p.height + 0.5, 'Lv up!', '#7dffa0');
     this.checkEvolution(p);
   }
 
@@ -1235,7 +1226,7 @@ export class Game {
 
   evolve(p: Mon, to: Species) {
     if (p.evolveTo || p.fainted) return;
-    if (p !== this.active || this.state !== 'playing') {
+    if (!this.out.includes(p) || this.state !== 'playing') {
       // Out of sight in its ball (or between rounds): no sequence, just the news.
       p.evolveTo = to;
       return this.finishEvolution(p, true);
@@ -1268,42 +1259,56 @@ export class Game {
     this.checkEvolution(m); // Rare Candy can push past two thresholds
   }
 
-  /** Recalls the Pokémon that's out (if any) and sends `m` out next to the trainer. */
-  private sendOut(m: Mon, quiet = false) {
-    if (m === this.active || m.fainted || !this.party.includes(m)) return;
-    const prev = this.active;
-    if (prev) {
-      prev.act = null;
-      prev.target = null;
-      if (!prev.fainted && !quiet) this.fx.spawn('shine', mid(prev), { size: 1.2, life: 0.3, grow: -0.6, color: 0xff6060 });
-      prev.obj.removeFromParent();
-    }
-    this.active = m;
-    this.faintSwitch = -1;
+  /** Sends `m` out next to the trainer (or at `at`, where it was just caught) to join the fight. */
+  private sendOut(m: Mon, quiet = false, at?: THREE.Vector3) {
+    if (this.out.includes(m) || m.fainted || !this.party.includes(m)) return;
+    this.benched.delete(m);
+    this.out.push(m);
     const tp = this.trainer.pos;
-    m.pos.set(tp.x + 1.2, 0, tp.z + 1.2);
+    if (at) m.pos.copy(at).setY(0);
+    else m.pos.set(tp.x + rand(-1.5, 1.5), 0, tp.z + rand(0.8, 1.8));
     this.clampArena(m.pos);
     m.act = null;
     m.target = null;
     m.grow = 0;
+    m.capScale = 1;
     m.cd = 0.5;
     this.scene.add(m.obj);
-    this.switchCd = SWITCH_CD;
     if (quiet) return;
     this.fx.sparkle(mid(m), 6);
     this.floater(m.pos, m.height + 0.7, `Go! ${m.sp.name}!`, '#ffffff');
     void audio.cry(m.sp.id, 0.5);
   }
 
-  /** Number keys / party cards: swap which Pokémon is out. */
-  switchTo(i: number) {
+  private recall(m: Mon) {
+    const i = this.out.indexOf(m);
+    if (i < 0) return;
+    this.out.splice(i, 1);
+    this.benched.add(m);
+    m.act = null;
+    m.target = null;
+    this.fx.spawn('shine', mid(m), { size: 1.2, life: 0.3, grow: -0.6, color: 0xff6060 });
+    m.obj.removeFromParent();
+  }
+
+  /** Everyone who can battle and hasn't been recalled comes out. `force` brings out recalled ones too. */
+  private deploy(force = false) {
+    if (force) this.benched.clear();
+    for (const p of this.party) if (!p.fainted && !this.benched.has(p)) this.sendOut(p, true);
+  }
+
+  /** Number keys / party cards: recall a Pokémon to its ball, or send it back out. */
+  toggleOut(i: number) {
     const m = this.party[i];
-    if (this.state !== 'playing' || !m || m === this.active) return;
+    if (this.state !== 'playing' || !m || this.switchCd > 0) return;
     if (m.fainted) return this.ui.toast(`${m.sp.name} has no energy left to battle!`, 'bad');
-    if (this.active?.evolveTo) return;
-    if (this.switchCd > 0 && !this.active?.fainted) return;
-    this.sendOut(m);
-    this.hint('switch', 'Switch Pokémon with 1-6 (or click a party card) to bring a better type matchup.');
+    if (m.evolveTo) return;
+    this.switchCd = SWITCH_CD;
+    if (!this.out.includes(m)) return this.sendOut(m);
+    if (this.out.length === 1) return this.ui.toast(`${m.sp.name} is the only one left battling!`, 'warn');
+    this.recall(m);
+    this.floater(m.pos, m.height + 0.7, `${m.sp.name}, come back!`, '#ff9a9a');
+    this.hint('recall', `Recalled Pokémon sit out safely but still earn half experience. Press ${i + 1} again to send it back out.`);
   }
 
   revive(p: Mon, frac: number) {
@@ -1312,12 +1317,13 @@ export class Game {
     this.checkEvolution(p); // may have passed a threshold via Rare Candy while fainted
   }
 
-  private addToParty(m: Mon) {
+  private addToParty(m: Mon, at?: THREE.Vector3) {
     this.party.push(m);
-    if (!this.active) this.sendOut(m);
-    else {
-      this.ui.toast(`${m.sp.name} joined your party — press ${this.party.length} to send it out.`, 'info');
-      this.hint('switch', 'Only one Pokémon fights at a time. Switch with 1-6 (or click a party card).');
+    // A fresh catch pops right back out of its ball and joins the brawl.
+    if (this.state === 'playing') this.sendOut(m, this.party.length === 1, at);
+    if (this.party.length > 1) {
+      this.ui.toast(`${m.sp.name} joined the fight!`, 'info');
+      this.hint('switch', 'Your whole party battles at once. Press 1-6 (or click a card) to recall one to safety.');
     }
     const stones = (m.sp.evos ?? []).filter((e) => e.stone).map((e) => STONE_NAME[e.stone!]);
     const from = Math.min(...(m.sp.evos ?? []).filter((e) => e.stone).map((e) => STONE_LEVEL[e.stone!]));
@@ -1430,8 +1436,7 @@ export class Game {
     if (register(w.sp.id, w.shiny)) setTimeout(() => this.ui.toast(`New Pokédex entry: ${w.sp.name}!`, 'info'), 700);
     nm.hp = Math.round(nm.maxHp * Math.max(0.5, w.hp / w.maxHp));
     nm.status = w.status;
-    nm.pos.copy(at).setY(0);
-    if (this.party.length < PARTY_MAX) this.addToParty(nm);
+    if (this.party.length < PARTY_MAX) this.addToParty(nm, at);
     else this.showSwap(nm);
   }
 
@@ -1457,14 +1462,12 @@ export class Game {
           tagColor: hex(TYPE_COLOR[p.sp.type]),
           body: `Lv${p.level} · ${p.fainted ? 'Fainted' : `${Math.ceil(p.hp)}/${p.maxHp} HP`}`,
           onClick: () => {
-            const wasOut = p === this.active;
+            if (this.out.includes(p)) this.out.splice(this.out.indexOf(p), 1);
+            this.benched.delete(p);
             p.dispose();
             this.party[i] = nm;
-            if (wasOut) {
-              this.active = null;
-              this.sendOut(nm);
-            } else void audio.cry(nm.sp.id, 0.5);
             resume();
+            this.sendOut(nm);
           },
         })),
         { title: `Let ${nm.sp.name} go`, icon: icon(url.front(nm.sp.dex, nm.shiny)), body: 'Keep your current team.', ghost: true, onClick: () => (nm.dispose(), resume()) },
@@ -1483,7 +1486,12 @@ export class Game {
       this.focusRing.scale.setScalar(Math.max(1, f.radius * 1.8));
       this.focusRing.rotation.z += dt * 2;
     }
-    if (this.active) this.animateMon(this.active, dt);
+    // Fainted Pokémon stay in the scene until they've shrunk back into their ball.
+    for (const p of this.party) {
+      if (!p.obj.parent) continue;
+      this.animateMon(p, dt);
+      if (p.fainted && p.capScale < 0.01) p.obj.removeFromParent();
+    }
     for (const m of this.wilds) this.animateMon(m, dt);
     this.dying = this.dying.filter((m) => {
       m.dying -= dt;
@@ -1752,7 +1760,7 @@ export class Game {
         evolving: p.evolveTo !== null,
         evoLevel: p.sp.evos?.find((e) => e.level)?.level,
         evoStones: (p.sp.evos ?? []).filter((e) => e.stone).map((e) => icon(url.item(e.stone!))),
-        active: p === this.active,
+        benched: this.benched.has(p),
       })),
     );
   }

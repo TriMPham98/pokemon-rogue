@@ -1,7 +1,7 @@
 # Pokémon Rogue (prototype)
 
 A semi-3D roguelike in the browser: pick a starter, survive endless rounds of wild Pokémon,
-weaken them and throw Poké Balls to build a party of up to six, one of which battles at a time.
+weaken them and throw Poké Balls to build a party of up to six that all battle at once.
 
 ```sh
 npm install
@@ -32,7 +32,7 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
 | WASD / arrows | Move the trainer |
 | Mouse | Aim (hovering a wild Pokémon locks on) |
 | Click / Space | Throw a Poké Ball |
-| 1-6 / click a party card | Switch which Pokémon is out |
+| 1-6 / click a party card | Recall a Pokémon to its ball, or send it back out |
 | Right-click / F | Toggle between attacking and holding fire (to set up catches) |
 | E | Focus your Pokémon on the wild Pokémon under the cursor (again to clear) |
 | Shift | Dash (1.4s cooldown) |
@@ -54,10 +54,12 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
 - Wild levels follow the journey: Lv2-4 on Route 1 up to the 70s in Cerulean Cave, where Mewtwo is Lv70 like in
   FireRed. Balance knobs for the horde format (wild attacks ease in over the first three areas, wild Pokémon act less
   often than your team, encounters come one at a time early on) live at the top of `src/battle.ts`.
-- One Pokémon is out at a time and auto-battles with its species' signature move; switch with 1-6 to play type
-  matchups. When it faints the next one comes out. The one battling gets full experience, the rest half (Exp. Share).
+- Your whole party is out at once, each auto-battling with its species' signature move and fanning out around you
+  between fights. A fresh catch pops straight out of its ball and joins in. Recall one with 1-6 to keep it safe (it
+  still earns Exp. Share); the last one standing can't be recalled. Whoever lands the knockout gets full experience,
+  everyone else half.
 - Wild Pokémon appear in the tall grass (or cave hollows) and loiter there until you or your Pokémon come close —
-  then a "!" pops up and they (and their neighbours) go after your Pokémon. Your Pokémon only goes after ones that are fighting
+  then a "!" pops up and they (and their neighbours) go after the nearest of your Pokémon. Your Pokémon only goes after ones that are fighting
   you, so you can walk up to a quiet one and throw a ball.
 - Each move has its own wind-up
   animation (lunges, leaps and ground-pounds, charging glows, psychic levitation) before the effect lands.
@@ -72,7 +74,7 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
 - Clearing a round plays the victory theme and gives +2 Poké Balls, a 35% heal, status cured, and 1 of 3 item
   rewards (Great/Ultra Ball upgrades, Full Heal, Rare Candy, …).
 - After an area's last round you stop at a Pokémon Center: the healing jingle plays, the whole party (fainted ones
-  too) are fully restored, and you pick who leads into the next area.
+  too) are fully restored and the whole team heads into the next area.
 - An area's 5th round ends with a strong wild Pokémon (★, orange arrow, the FRLG wild-battle theme): an evolved form
   of one of the area's basic Pokémon a few levels up — Pidgeotto on Route 1, Butterfree in Viridian Forest.
 - Every 5 rounds you move to the next area of Kanto, in story order: Route 1 → Viridian Forest → Mt. Moon →
@@ -83,7 +85,7 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
   encounters on the last round of their FireRed haunts (with the legendary battle themes); Mew hides in Cerulean Cave.
 - 1 in 64 wild Pokémon are shiny (sparkles, chime, blue off-screen arrow). Shininess survives catching and evolving.
 - Progress persists between runs in localStorage: best round, Pokédex, shinies.
-- Only Pokémon battle: wild ones go after the Pokémon you've sent out, never the trainer. The run ends when your
+- Only Pokémon battle: wild ones go after your Pokémon, never the trainer. The run ends when your
   whole party faints.
 - The game opens on a title screen (FireRed's title theme, the area slowly circling behind it) with your best round,
   Pokédex, shinies and run count from earlier runs.
