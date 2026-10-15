@@ -339,3 +339,36 @@ body {
   .party { grid-template-columns: repeat(3, 186px); }
   .hint { bottom: 196px; }
 }
+
+/* ───────── debug panel (dev builds / ?debug) ───────── */
+.has-dbg .toasts { top: 52px; }
+.dbg { position: absolute; top: 14px; right: 14px; z-index: 30; pointer-events: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; font-size: 12px; }
+.dbg button, .dbg select, .dbg input {
+  font: inherit; color: var(--text); background: rgba(255, 255, 255, 0.08); border: 1px solid var(--line); border-radius: 6px; padding: 3px 7px;
+}
+.dbg button { cursor: pointer; font-weight: 600; }
+.dbg button:hover { background: rgba(255, 255, 255, 0.18); }
+.dbg button.danger:hover { background: rgba(255, 59, 48, 0.5); }
+.dbg select option { background: #1b2033; }
+.dbg input[type='number'] { width: 52px; }
+.dbg input[type='checkbox'] { margin: 0 4px 0 0; vertical-align: -2px; accent-color: var(--accent); }
+.dbg .dbg-toggle { background: var(--glass-strong); box-shadow: var(--shadow); padding: 6px 10px; font-weight: 700; }
+.dbg .dbg-toggle kbd { font-size: 10px; opacity: 0.6; }
+.dbg .caret { display: inline-block; transition: transform 0.15s; }
+.dbg.open .caret { transform: rotate(180deg); }
+.dbg-body {
+  display: none; width: 360px; max-width: calc(100vw - 28px); max-height: calc(100vh - 80px); overflow-y: auto;
+  background: var(--glass-strong); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 8px 10px 10px;
+}
+.dbg.open .dbg-body { display: block; }
+.dbg h4 { margin: 10px 0 5px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.dbg-info { color: var(--gold); font-weight: 700; }
+.dbg-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 5px; }
+.dbg-row select#dbg-sp { flex: 1; min-width: 0; }
+.dbg-mon { display: grid; grid-template-columns: 32px 1fr auto; align-items: center; column-gap: 6px; padding: 5px 0; border-top: 1px solid var(--line); }
+.dbg-mon:first-child { border-top: 0; }
+.dbg-mon img { width: 32px; height: 32px; image-rendering: pixelated; object-fit: contain; grid-row: span 2; }
+.dbg-mon .lvl { color: var(--muted); font-weight: 700; }
+.dbg-mon .dbg-row { grid-column: 2 / 4; margin-top: 2px; }
+.dbg-mon.fainted { opacity: 0.55; }
+.dbg-empty { color: var(--muted); }

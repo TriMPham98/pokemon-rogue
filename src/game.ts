@@ -216,6 +216,8 @@ export class Game {
   private later: { t: number; fn: () => void }[] = [];
   /** Evolutions waiting for the end of the round, where each plays its full sequence before anything else happens. */
   private evoQueue: { mon: Mon; to: Species }[] = [];
+  /** Testing switches, flipped from the debug panel (see debug.ts). */
+  readonly cheats = { god: false, oneShot: false, sureCatch: false, xpMul: 1, speed: 1 };
 
   constructor(container: HTMLElement) {
     const r = this.renderer;
@@ -301,6 +303,7 @@ export class Game {
   private bindInput() {
     window.addEventListener('resize', () => this.resize());
     window.addEventListener('keydown', (e) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return; // typing in the debug panel
       const k = e.key.toLowerCase();
       this.keys.add(k);
       audio.unlock();
@@ -639,12 +642,17 @@ export class Game {
     let gdt = dt;
     if (this.hitStop > 0) (this.hitStop -= dt), (gdt = dt * 0.08);
     this.hitStopCd -= dt;
-    if (active) this.time += gdt;
-    if (this.state === 'playing') this.update(gdt);
-    if (active) {
-      this.animate(gdt);
-      this.fx.update(gdt);
-      this.arena?.userData.tick?.(this.time, gdt);
+    // Debug speed: slow motion scales the step, fast forward runs extra steps so nothing tunnels.
+    const speed = this.cheats.speed;
+    if (speed < 1) gdt *= speed;
+    for (let i = 0; i < Math.max(1, speed); i++) {
+      if (active) this.time += gdt;
+      if (this.state === 'playing') this.update(gdt);
+      if (active) {
+        this.animate(gdt);
+        this.fx.update(gdt);
+        this.arena?.userData.tick?.(this.time, gdt);
+      }
     }
     this.updateCamera(dt);
     this.renderer.render(this.scene, this.camera);
@@ -823,12 +831,12 @@ export class Game {
     });
   }
 
-  private spawnWild(leader: boolean, home = this.pickHome()) {
+  private spawnWild(leader: boolean, home = this.pickHome(), force: { sp?: Species; shiny?: boolean } = {}) {
     // Each area has its own encounter table; evolved forms unlock later in the area.
     const stage = areaRound(this.round);
     const level = Math.min(100, wildLevel(this.round) + (leader ? LEADER_LEVELS : 0));
-    const sp = leader ? this.leaderSpecies(level) : weightedPick(this.biome.wild.filter((e) => e.from <= stage), (e) => e.w).sp;
-    const shiny = Math.random() < SHINY_ODDS;
+    const sp = force.sp ?? (leader ? this.leaderSpecies(level) : weightedPick(this.biome.wild.filter((e) => e.from <= stage), (e) => e.w).sp);
+    const shiny = force.shiny ?? Math.random() < SHINY_ODDS;
     const m = new Mon(sp, level, 'wild', leader, shiny);
     this.refreshMusic();
     // Appear in its patch of grass, not on top of the others already there, and loiter.
@@ -1240,11 +1248,12 @@ export class Game {
       this.floater(m.pos, m.height + 0.4, 'Woke up!', '#c8d0ff');
     }
     let chip = 0;
+    if (m.side === 'party' && this.cheats.god) m.trapT = 0;
     if (m.trapT > 0) {
       m.trapT -= dt;
       chip += m.maxHp * (1 / 16) * dt;
     }
-    if (m.status === 'psn' || m.status === 'brn') chip += m.maxHp * STATUS_DOT * dt;
+    if ((m.status === 'psn' || m.status === 'brn') && !(m.side === 'party' && this.cheats.god)) chip += m.maxHp * STATUS_DOT * dt;
     if (chip <= 0) return;
     m.hp = Math.max(Math.min(m.hp, 1), m.hp - chip);
     m.statusTick -= dt;
@@ -1257,6 +1266,8 @@ export class Game {
 
   private hit(t: Mon, dmg: number, mult: number, from?: THREE.Vector3, knock = 0, crit = false) {
     if (!t.alive) return;
+    if (t.side === 'party' && this.cheats.god) dmg = 0;
+    if (t.side === 'wild' && this.cheats.oneShot && mult > 0) dmg = Math.max(dmg, t.hp);
     if (mult === 0) {
       if (t.side === 'wild') this.floater(t.pos, t.height + 0.2, 'immune', '#aaaaaa');
       return;
@@ -1315,7 +1326,7 @@ export class Game {
   private grantXp(w: Mon) {
     for (const p of this.party) {
       if (p.fainted || p.level >= 100) continue;
-      p.xp += expGain(w, p.level, p === w.lastHitBy ? 1 : EXP_SHARE_BENCH);
+      p.xp += expGain(w, p.level, p === w.lastHitBy ? 1 : EXP_SHARE_BENCH) * this.cheats.xpMul;
       while (p.level < 100 && p.xp >= expAt(p.sp.growth, p.level + 1)) this.levelUp(p);
     }
   }
@@ -1765,6 +1776,7 @@ export class Game {
   }
 
   catchOdds(w: Mon) {
+    if (this.cheats.sureCatch) return 1;
     return catchChance(w.sp, w.hp, w.maxHp, BALLS[this.ball].mult, w.status);
   }
 
@@ -2123,5 +2135,117 @@ export class Game {
         benched: this.benched.has(p),
       })),
     );
+  }
+
+  // ───────────────────────────── debug ─────────────────────────────
+  // Used by the debug panel (debug.ts); none of this is reachable in a normal run.
+
+  get dbgInfo() {
+    return { state: this.state, round: this.round, biome: this.biome.name, balls: this.pokeballs, ball: this.ball, wilds: this.wilds.length };
+  }
+
+  /** Jumps straight to a level, keeping HP proportional and queuing any evolution it unlocks. */
+  dbgSetLevel(p: Mon, level: number) {
+    level = clamp(Math.round(level), 1, 100);
+    if (level === p.level) return;
+    const frac = p.maxHp ? p.hp / p.maxHp : 1;
+    p.level = level;
+    p.xp = expAt(p.sp.growth, level);
+    p.recalc();
+    if (!p.fainted) p.hp = Math.max(1, Math.round(p.maxHp * frac));
+    audio.levelUp();
+    if (this.out.includes(p)) this.floater(p.pos, p.height + 0.5, `Lv${level}!`, '#7dffa0');
+    this.checkEvolution(p);
+  }
+
+  /** Queues an evolution regardless of level or stone, and plays it right away if the round allows. */
+  dbgEvolve(p: Mon, to: Species) {
+    this.evolve(p, to);
+    void this.dbgPlayEvolutions();
+  }
+
+  /** Plays queued evolutions now instead of at the end of the round. */
+  async dbgPlayEvolutions() {
+    if (this.state !== 'playing' || !this.evoQueue.length) return;
+    this.state = 'reward'; // freezes the fight and ignores Esc while the sequence plays
+    this.keys.clear();
+    await this.playEvolutions();
+    this.state = 'playing';
+    this.refreshMusic();
+  }
+
+  dbgAddMon(sp: Species, level: number, shiny: boolean) {
+    if (this.party.length >= PARTY_MAX) return this.ui.toast('Party is full — release one first.', 'bad');
+    const m = new Mon(sp, clamp(Math.round(level), 1, 100), 'party', false, shiny);
+    register(sp.id, shiny);
+    this.addToParty(m);
+  }
+
+  dbgRelease(p: Mon) {
+    if (this.party.length <= 1) return this.ui.toast("Can't release your last Pokémon.", 'bad');
+    if (this.out.includes(p)) this.out.splice(this.out.indexOf(p), 1);
+    this.benched.delete(p);
+    this.evoQueue = this.evoQueue.filter((e) => e.mon !== p);
+    this.party.splice(this.party.indexOf(p), 1);
+    p.dispose();
+  }
+
+  /** Full HP, no status, fainted ones revived and back in the fight. */
+  dbgHeal() {
+    for (const p of this.party) {
+      p.fainted = false;
+      p.hp = p.maxHp;
+      p.status = null;
+      p.trapT = p.slowT = p.stunT = 0;
+    }
+    if (this.state === 'playing') this.deploy();
+  }
+
+  dbgCharge() {
+    for (const p of this.party) this.chargeUp(p, 1);
+  }
+
+  dbgBalls(n: number) {
+    this.pokeballs += n;
+  }
+
+  dbgCycleBall() {
+    const kinds = Object.keys(BALLS) as BallKind[];
+    this.ball = kinds[(kinds.indexOf(this.ball) + 1) % kinds.length];
+  }
+
+  /** Knocks out every wild Pokémon (with experience) and cancels the rest of the round, so it ends right away. */
+  dbgClearRound() {
+    if (this.state !== 'playing') return;
+    this.toSpawn = 0;
+    this.leaderPending = false;
+    for (const w of [...this.wilds]) {
+      if (w.capturing) continue;
+      w.hp = 0;
+      this.faint(w);
+    }
+  }
+
+  /** Skips to round `n` without fighting the rounds in between (no rewards, no experience). */
+  dbgJump(n: number) {
+    if (this.state !== 'playing') return this.ui.toast('Jump during a round.', 'bad');
+    for (const w of this.wilds) w.dispose();
+    for (const p of this.projectiles) this.dropSprite(p.sprite);
+    for (const b of this.balls) this.dropSprite(b.sprite);
+    this.wilds = [];
+    this.projectiles = [];
+    this.balls = [];
+    this.clouds = [];
+    this.later = [];
+    this.focus = null;
+    for (const p of this.party) (p.target = null), (p.act = null);
+    this.startRound(Math.max(1, Math.round(n)));
+  }
+
+  dbgSpawn(opts: { leader?: boolean; sp?: Species; shiny?: boolean }) {
+    if (this.state !== 'playing') return this.ui.toast('Spawn during a round.', 'bad');
+    const w = this.spawnWild(!!opts.leader, this.pickHome(), opts);
+    this.roundTotal++;
+    this.alert(w);
   }
 }
