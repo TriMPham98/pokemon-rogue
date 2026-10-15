@@ -5,7 +5,7 @@ import { type AnimSheet, getAnim, getTex, setFrame, sheetView, url } from './ass
 import { shared } from './models';
 
 /**
- * On-screen height for a Pokédex height in metres, next to the 1.9-unit trainer. Square-root compressed so
+ * On-screen height for a Pokédex height in metres, next to the trainer (who stands as a 1.6 m one would). Square-root compressed so
  * Diglett (0.2 m) is still clickable and Onix (8.8 m) still fits the arena.
  */
 const worldHeight = (m: number) => Math.max(0.55, Math.min(4.2, 1.3 * Math.sqrt(m)));
@@ -234,6 +234,13 @@ export class Mon {
 }
 
 export const TRAINER_FRAMES = 9; // pokefirered overworld sheet: down, up, left, then two walking frames for each
+// Each 16×32 frame has 12 empty rows on top; show only the 20 that hold Red, so his size is his size.
+const TRAINER_ROWS = 20, TRAINER_FRAME_H = 32;
+/**
+ * World units per sheet pixel: Red stands about as tall as a 1.6 m Pokémon would (see worldHeight), so Pikachu reaches
+ * his waist and Charizard looks him in the eye.
+ */
+const TRAINER_PX = worldHeight(1.6) / (TRAINER_ROWS - 1);
 const STAND = { down: 0, up: 1, left: 2, right: 2 };
 const STEPS = { down: [3, 4], up: [5, 6], left: [7, 8], right: [7, 8] };
 type Facing = keyof typeof STAND;
@@ -244,8 +251,8 @@ export class Trainer {
   moving = false;
   throwT = 0;
   facing: Facing = 'down';
-  readonly radius = 0.45;
-  readonly height = 1.9;
+  readonly radius = 0.5;
+  readonly height = TRAINER_PX * TRAINER_ROWS;
   readonly obj = new THREE.Group();
   readonly sprite: THREE.Sprite;
   private tex: THREE.Texture;
@@ -255,13 +262,13 @@ export class Trainer {
     this.tex.colorSpace = THREE.SRGBColorSpace;
     this.tex.magFilter = this.tex.minFilter = THREE.NearestFilter;
     this.tex.generateMipmaps = false;
-    this.tex.repeat.set(1 / TRAINER_FRAMES, 1);
+    this.tex.repeat.set(1 / TRAINER_FRAMES, TRAINER_ROWS / TRAINER_FRAME_H);
     this.sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.tex, alphaTest: 0.1 }));
     this.sprite.center.set(0.5, 0);
     const shadow = new THREE.Mesh(shadowGeo, shadowMat);
     shadow.rotation.x = -Math.PI / 2;
     shadow.position.y = 0.03;
-    shadow.scale.setScalar(0.4);
+    shadow.scale.setScalar(0.5);
     this.obj.add(this.sprite, shadow);
   }
 
@@ -287,7 +294,7 @@ export class Trainer {
     this.tex.offset.x = (frame + (right ? 1 : 0)) / TRAINER_FRAMES;
     // A quick wind-up and fling when throwing a ball.
     const th = this.throwT > 0 ? Math.sin((1 - this.throwT / 0.3) * Math.PI) : 0;
-    const w = 0.95, h = 1.9;
+    const w = 16 * TRAINER_PX, h = this.height;
     this.sprite.scale.set(w * (1 + 0.08 * th), h * (1 - 0.08 * th), 1);
     this.sprite.position.y = walkRate > 0 ? Math.abs(Math.sin(this.walk * Math.PI)) * 0.05 : 0;
   }

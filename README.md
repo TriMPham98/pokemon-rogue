@@ -67,7 +67,8 @@ envelopes and loop points. Sound effects (throws, hits, level-up) are synthesize
   (freezes in place), Focus Punch / Fly (leap in), Poison Gas (a lingering cloud), Earthquake, Psychic (lifts and
   holds), Spider Web, Rock Slide (flinch), Night Shade, Outrage (rampage) and Hyper Beam (pierces a line, then
   recharge).
-- Hordes grow with the round and with your party size, and arrive in packs that share a patch of grass. Area moves
+- Hordes grow with the round and with your party size, and arrive in small packs. Each patch of grass only
+  holds two or three, so they spread over the patches all round the arena (favouring the emptiest). Area moves
   (Earthquake, Surf, Fire Blast, Blizzard, Thunder, Psychic, Rock Slide, Sludge Bomb, Hyper Beam…) hit everything
   near the target for 75% damage, like spread moves in doubles. The knobs are at the top of `src/battle.ts`.
 - Wild Voltorb, Electrode, Geodude, Graveler, Golem, Koffing and Weezing light a fuse when badly hurt: a red ring

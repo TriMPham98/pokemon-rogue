@@ -455,14 +455,15 @@ export function buildArena(b: Biome) {
   if (art.patches) {
     const [name, n] = art.patches;
     const cells: [number, number][] = [];
-    for (const spot of spotsIn(n, 5, ARENA_R - 4, 6, busy, 1)) {
-      const r = rnd(1.8, 3);
+    // Plenty of smaller patches all round the arena, so the wild Pokémon living in them are spread out too.
+    for (const spot of spotsIn(Math.round(n * 1.5) + 3, 6, ARENA_R - 3.5, 5.5, busy, 1)) {
+      const r = rnd(1.7, 2.7);
       cells.push(...blob(spot.x, spot.z, r).filter(([x, z]) => inside(x, z)));
       zones.push({ x: spot.x, z: spot.z, r: r * 0.8 });
     }
     g.add(decals(name, cells, 0.02));
   } else {
-    for (const spot of spotsIn(8, 6, ARENA_R - 4, 7, [{ x: 0, z: 0, s: 0.8 }], 1)) zones.push({ x: spot.x, z: spot.z, r: 2.6 });
+    for (const spot of spotsIn(13, 6, ARENA_R - 3.5, 6, [{ x: 0, z: 0, s: 0.8 }], 1)) zones.push({ x: spot.x, z: spot.z, r: 2.6 });
   }
   g.userData.zones = zones;
   for (const [name, n] of art.decals ?? []) {

@@ -59,7 +59,7 @@ interface Reward {
 const PARTY_MAX = 6;
 const AGGRO_R = 5.5; // wild Pokémon notice you (or your Pokémon) this close
 const SWITCH_CD = 0.6; // seconds between recalling / sending out Pokémon
-const FORMATION_R = 1.8; // idle party Pokémon fan out around the trainer at this distance
+const FORMATION_R = 2.1; // idle party Pokémon fan out around the trainer at this distance
 const THROW_RANGE = 14;
 const TRAINER_SPEED = 7;
 const CAM_OFFSET = new THREE.Vector3(0, 12, 12);
@@ -764,10 +764,15 @@ export class Game {
       // They wait in the grass until you come close, so more can be around at once than are fighting you.
       const team = this.party.length, cap = hordeCap(this.round, team);
       if (this.spawnTimer <= 0 && this.wilds.length < cap) {
-        // Packs share a patch of grass: bunched up, and worth an area move.
+        // Packs share a patch of grass (still worth an area move), but each patch only holds so many: the rest
+        // spread over the other patches, so the horde surrounds you instead of piling into one corner.
         const pack = Math.min(this.toSpawn, cap - this.wilds.length, 1 + Math.floor(Math.random() * packMax(this.round)));
-        const home = this.pickHome();
-        for (let i = 0; i < pack; i++) this.spawnWild(false, home);
+        for (let left = pack; left > 0; ) {
+          const home = this.pickHome();
+          const n = Math.min(left, Math.max(1, this.room(home)));
+          for (let i = 0; i < n; i++) this.spawnWild(false, home);
+          left -= n;
+        }
         this.toSpawn -= pack;
         this.spawnTimer = spawnGap(this.round, team) * (0.6 + 0.4 * pack);
       }
@@ -797,12 +802,25 @@ export class Game {
     return sp;
   }
 
-  /** A patch of tall grass (or a cave hollow) away from the trainer. */
+  /** How many more wild Pokémon a patch holds before it's crowded. */
+  private room(z: Zone) {
+    return Math.max(2, Math.round(z.r * 1.2)) - this.wilds.filter((w) => w.home === z && w.alive).length;
+  }
+
+  /**
+   * A patch of tall grass (or a cave hollow) away from the trainer, favouring the emptiest ones so wild Pokémon end up
+   * spread over the whole arena.
+   */
   private pickHome(): Zone {
     const tp = this.trainer.pos;
     const zones: Zone[] = this.arena?.userData.zones ?? [];
     const far = zones.filter((z) => Math.hypot(z.x - tp.x, z.z - tp.z) > AGGRO_R + z.r + 3);
-    return pick(far.length ? far : zones.length ? zones : [{ x: 0, z: -12, r: 3 }]);
+    const pool = far.length ? far : zones;
+    if (!pool.length) return { x: 0, z: -12, r: 3 };
+    return weightedPick(pool, (z) => {
+      const room = this.room(z);
+      return room > 0 ? 1 + room : 0.05;
+    });
   }
 
   private spawnWild(leader: boolean, home = this.pickHome()) {
@@ -813,10 +831,15 @@ export class Game {
     const shiny = Math.random() < SHINY_ODDS;
     const m = new Mon(sp, level, 'wild', leader, shiny);
     this.refreshMusic();
-    // Appear in its patch of grass and loiter there.
-    const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * home.r;
+    // Appear in its patch of grass, not on top of the others already there, and loiter.
     m.home = home;
-    m.pos.set(home.x + Math.cos(a) * r, 0, home.z + Math.sin(a) * r);
+    let best = -1;
+    for (let i = 0; i < 6; i++) {
+      const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * home.r;
+      const x = home.x + Math.cos(a) * r, z = home.z + Math.sin(a) * r;
+      const gap = Math.min(9, ...this.wilds.map((w) => Math.hypot(w.pos.x - x, w.pos.z - z)));
+      if (gap > best) (best = gap), m.pos.set(x, 0, z);
+    }
     m.face(rand(-1, 1), rand(-1, 1));
     this.scene.add(m.obj);
     this.wilds.push(m);
